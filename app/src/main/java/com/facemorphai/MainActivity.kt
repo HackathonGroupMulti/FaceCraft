@@ -5,13 +5,15 @@ import android.util.Log
 import android.webkit.WebView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
+import androidx.compose.material3.ExposedDropdownMenuAnchorType as MenuAnchorType
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -38,6 +40,11 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // Enable edge-to-edge display
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+        )
+
         nexaService = NexaService.getInstance(this)
         faceMorphService = FaceMorphService(this)
 
@@ -59,40 +66,31 @@ class MainActivity : ComponentActivity() {
         var selectedRegion by remember { mutableStateOf(FaceRegion.ALL) }
         var promptText by remember { mutableStateOf("") }
         var isLoading by remember { mutableStateOf(false) }
-        var statusMessage by remember { mutableStateOf("Initializing...") }
-        var isModelLoaded by remember { mutableStateOf(false) }
         var expanded by remember { mutableStateOf(false) }
 
         val context = LocalContext.current
 
-        // Check model status
-        LaunchedEffect(Unit) {
-            if (nexaService.hasModelLoaded()) {
-                statusMessage = "Ready"
-                isModelLoaded = true
-            } else {
-                statusMessage = "Model not loaded - Load a model to start"
-            }
-        }
-
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(16.dp)
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .padding(horizontal = 16.dp)
+                .padding(top = 8.dp, bottom = 8.dp)
         ) {
             // Title
             Text(
                 text = "FaceCraft",
-                style = MaterialTheme.typography.headlineMedium,
-                modifier = Modifier.padding(bottom = 16.dp)
+                style = MaterialTheme.typography.headlineLarge,
+                modifier = Modifier.padding(bottom = 12.dp)
             )
 
             // 3D Viewer (WebView)
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(1f)
-                    .padding(bottom = 16.dp)
+                    .weight(0.55f),
+                shape = MaterialTheme.shapes.large
             ) {
                 AndroidView(
                     factory = { ctx ->
@@ -122,24 +120,21 @@ class MainActivity : ComponentActivity() {
                 )
             }
 
+            Spacer(modifier = Modifier.height(12.dp))
+
             // Controls Card
             Card(
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(0.45f),
+                shape = MaterialTheme.shapes.large
             ) {
                 Column(
                     modifier = Modifier
+                        .fillMaxSize()
                         .padding(16.dp)
                         .verticalScroll(rememberScrollState())
                 ) {
-                    // Status
-                    Text(
-                        text = "Status: $statusMessage",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (isModelLoaded) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.error,
-                        modifier = Modifier.padding(bottom = 8.dp)
-                    )
-
                     // Region Selector
                     ExposedDropdownMenuBox(
                         expanded = expanded,
@@ -153,7 +148,7 @@ class MainActivity : ComponentActivity() {
                             label = { Text("Face Region") },
                             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
                             modifier = Modifier
-                                .menuAnchor()
+                                .menuAnchor(MenuAnchorType.PrimaryNotEditable, enabled = true)
                                 .fillMaxWidth()
                         )
 
@@ -173,7 +168,7 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(10.dp))
 
                     // Prompt Input
                     OutlinedTextField(
@@ -182,77 +177,79 @@ class MainActivity : ComponentActivity() {
                         label = { Text("Describe the modification") },
                         placeholder = { Text("e.g., make the eyes look more mysterious") },
                         modifier = Modifier.fillMaxWidth(),
-                        minLines = 2,
-                        maxLines = 4
+                        minLines = 1,
+                        maxLines = 2,
+                        singleLine = false
                     )
 
-                    Spacer(modifier = Modifier.height(16.dp))
+                    Spacer(modifier = Modifier.height(12.dp))
 
-                    // Generate Button
-                    Button(
-                        onClick = {
-                            if (promptText.isNotBlank()) {
-                                isLoading = true
-                                statusMessage = "Generating..."
+                    // Action Buttons Row
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        // Reset Button
+                        OutlinedButton(
+                            onClick = {
+                                faceMorphService.resetParameters()
+                                webViewBridge?.resetMorphs()
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Reset")
+                        }
 
-                                lifecycleScope.launch {
-                                    val request = MorphRequest(
-                                        region = selectedRegion,
-                                        prompt = promptText
-                                    )
+                        // Generate Button
+                        Button(
+                            onClick = {
+                                if (promptText.isNotBlank()) {
+                                    isLoading = true
 
-                                    val result = faceMorphService.generateMorph(request)
+                                    lifecycleScope.launch {
+                                        val request = MorphRequest(
+                                            region = selectedRegion,
+                                            prompt = promptText
+                                        )
 
-                                    isLoading = false
+                                        val result = faceMorphService.generateMorph(request)
 
-                                    if (result.success) {
-                                        statusMessage = "Applied in ${result.generationTimeMs}ms"
-                                        webViewBridge?.animateMorphs(result.parameters)
-                                    } else {
-                                        statusMessage = result.errorMessage ?: "Error"
-                                        Toast.makeText(
-                                            context,
-                                            result.errorMessage ?: "Generation failed",
-                                            Toast.LENGTH_SHORT
-                                        ).show()
+                                        isLoading = false
+
+                                        if (result.success) {
+                                            webViewBridge?.animateMorphs(result.parameters)
+                                        } else {
+                                            Toast.makeText(
+                                                context,
+                                                result.errorMessage ?: "Generation failed",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
                                     }
                                 }
+                            },
+                            enabled = !isLoading && promptText.isNotBlank(),
+                            modifier = Modifier.weight(2f)
+                        ) {
+                            if (isLoading) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.onPrimary
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
                             }
-                        },
-                        enabled = !isLoading && promptText.isNotBlank(),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        if (isLoading) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(20.dp),
-                                strokeWidth = 2.dp
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(if (isLoading) "Generating..." else "Apply")
                         }
-                        Text(if (isLoading) "Generating..." else "Apply Changes")
                     }
 
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    // Reset Button
-                    OutlinedButton(
-                        onClick = {
-                            faceMorphService.resetParameters()
-                            webViewBridge?.resetMorphs()
-                            statusMessage = "Reset to default"
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("Reset Face")
-                    }
+                    Spacer(modifier = Modifier.height(12.dp))
 
                     // Template Models Row
-                    Spacer(modifier = Modifier.height(16.dp))
-
                     Text(
-                        text = "Template Models",
+                        text = "Templates",
                         style = MaterialTheme.typography.labelMedium,
-                        modifier = Modifier.padding(bottom = 8.dp)
+                        modifier = Modifier.padding(bottom = 6.dp)
                     )
 
                     Row(
@@ -263,11 +260,14 @@ class MainActivity : ComponentActivity() {
                             OutlinedButton(
                                 onClick = {
                                     webViewBridge?.loadTemplateModel(template)
-                                    statusMessage = "Loading $template template..."
                                 },
-                                modifier = Modifier.weight(1f)
+                                modifier = Modifier.weight(1f),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
                             ) {
-                                Text(template.replaceFirstChar { it.uppercase() })
+                                Text(
+                                    template.replaceFirstChar { it.uppercase() },
+                                    style = MaterialTheme.typography.labelMedium
+                                )
                             }
                         }
                     }

@@ -6,8 +6,12 @@ import com.nexa.sdk.NexaSdk
 import com.nexa.sdk.VlmWrapper
 import com.nexa.sdk.bean.VlmCreateInput
 import com.nexa.sdk.bean.ModelConfig
+import com.nexa.sdk.bean.GenerationConfig
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.launch
 import java.io.File
 
 /**
@@ -39,6 +43,9 @@ class NexaService(private val context: Context) {
     private var isModelLoaded = false
     private var currentPluginId: String = PLUGIN_ID_NPU
 
+    // Coroutine scope for model operations
+    private val modelScope = CoroutineScope(Dispatchers.IO)
+
     // Model paths
     private val modelsDir: File
         get() = File(context.filesDir, "models")
@@ -68,7 +75,6 @@ class NexaService(private val context: Context) {
 
     /**
      * Get the path where models should be stored.
-     * Example: /data/data/com.facemorphai/files/models/
      */
     fun getModelsDirectory(): File {
         if (!modelsDir.exists()) {
@@ -87,8 +93,6 @@ class NexaService(private val context: Context) {
 
     /**
      * Load the VLM model for face morph generation.
-     * @param modelPath Absolute path to the .nexa model file
-     * @param preferNpu Whether to prefer NPU acceleration (requires Snapdragon 8 Elite)
      */
     fun loadModel(
         modelPath: String,
@@ -107,49 +111,52 @@ class NexaService(private val context: Context) {
 
         currentPluginId = if (preferNpu) PLUGIN_ID_NPU else PLUGIN_ID_CPU
 
-        val config = ModelConfig(
-            max_tokens = 2048,
-            enable_thinking = false
-        )
-
-        VlmWrapper.builder()
-            .vlmCreateInput(
-                VlmCreateInput(
-                    model_name = MODEL_NAME,
-                    model_path = modelPath,
-                    config = config,
-                    plugin_id = currentPluginId
-                )
+        modelScope.launch {
+            val config = ModelConfig(
+                nCtx = 2048,
+                nThreads = 4,
+                enable_thinking = false,
+                npu_lib_folder_path = context.applicationInfo.nativeLibraryDir,
+                npu_model_folder_path = File(modelPath).parent ?: ""
             )
-            .build()
-            .onSuccess { wrapper ->
-                vlmWrapper = wrapper
-                isModelLoaded = true
-                Log.d(TAG, "Model loaded successfully with plugin: $currentPluginId")
-                callback.onSuccess()
-            }
-            .onFailure { error ->
-                Log.e(TAG, "Model load failed with $currentPluginId: ${error.message}")
 
-                // Fallback to CPU if NPU failed
-                if (currentPluginId == PLUGIN_ID_NPU) {
-                    Log.d(TAG, "Attempting CPU fallback...")
-                    loadModelWithPlugin(modelPath, PLUGIN_ID_CPU, callback)
-                } else {
-                    callback.onFailure(error.message ?: "Unknown error loading model")
+            VlmWrapper.builder()
+                .vlmCreateInput(
+                    VlmCreateInput(
+                        model_name = MODEL_NAME,
+                        model_path = modelPath,
+                        config = config,
+                        plugin_id = currentPluginId
+                    )
+                )
+                .build()
+                .onSuccess { wrapper ->
+                    vlmWrapper = wrapper
+                    isModelLoaded = true
+                    Log.d(TAG, "Model loaded successfully with plugin: $currentPluginId")
+                    callback.onSuccess()
                 }
-            }
+                .onFailure { error ->
+                    Log.e(TAG, "Model load failed with $currentPluginId: ${error.message}")
+                    if (currentPluginId == PLUGIN_ID_NPU) {
+                        Log.d(TAG, "Attempting CPU fallback...")
+                        loadModelCpuFallback(modelPath, callback)
+                    } else {
+                        callback.onFailure(error.message ?: "Unknown error loading model")
+                    }
+                }
+        }
     }
 
-    private fun loadModelWithPlugin(
+    private suspend fun loadModelCpuFallback(
         modelPath: String,
-        pluginId: String,
         callback: ModelLoadCallback
     ) {
-        currentPluginId = pluginId
+        currentPluginId = PLUGIN_ID_CPU
 
         val config = ModelConfig(
-            max_tokens = 2048,
+            nCtx = 2048,
+            nThreads = 4,
             enable_thinking = false
         )
 
@@ -159,29 +166,26 @@ class NexaService(private val context: Context) {
                     model_name = MODEL_NAME,
                     model_path = modelPath,
                     config = config,
-                    plugin_id = pluginId
+                    plugin_id = PLUGIN_ID_CPU
                 )
             )
             .build()
             .onSuccess { wrapper ->
                 vlmWrapper = wrapper
                 isModelLoaded = true
-                Log.d(TAG, "Model loaded with fallback plugin: $pluginId")
+                Log.d(TAG, "Model loaded with CPU fallback")
                 callback.onSuccess()
             }
             .onFailure { error ->
-                Log.e(TAG, "Model load failed with $pluginId: ${error.message}")
+                Log.e(TAG, "Model load failed with CPU: ${error.message}")
                 callback.onFailure(error.message ?: "Unknown error")
             }
     }
 
     /**
      * Generate a response from the VLM.
-     * Returns a Flow that emits tokens as they're generated.
      */
-    fun generateStream(
-        prompt: String
-    ): Flow<StreamResult> = flow {
+    fun generateStream(prompt: String): Flow<StreamResult> = flow {
         val wrapper = vlmWrapper
         if (wrapper == null) {
             emit(StreamResult.Error("Model not loaded"))
@@ -189,11 +193,20 @@ class NexaService(private val context: Context) {
         }
 
         try {
-            wrapper.generateStreamFlow(prompt)
+            val genConfig = GenerationConfig(
+                maxTokens = 512,
+                stopWords = null,
+                stopCount = 0,
+                nPast = 0,
+                imagePaths = null,
+                imageCount = 0,
+                audioPaths = null,
+                audioCount = 0
+            )
+            wrapper.generateStreamFlow(prompt, genConfig)
                 .collect { result ->
                     emit(StreamResult.Token(result.toString()))
                 }
-
             emit(StreamResult.Completed(0, 0, 0, 0f))
         } catch (e: Exception) {
             emit(StreamResult.Error(e.message ?: "Generation failed"))
@@ -203,17 +216,14 @@ class NexaService(private val context: Context) {
     /**
      * Generate a complete response (non-streaming).
      */
-    suspend fun generate(
-        prompt: String,
-        maxTokens: Int = 512
-    ): Result<String> {
+    suspend fun generate(prompt: String, maxTokens: Int = 512): Result<String> {
         val builder = StringBuilder()
         var error: String? = null
 
         generateStream(prompt).collect { result ->
             when (result) {
                 is StreamResult.Token -> builder.append(result.text)
-                is StreamResult.Completed -> { /* Done */ }
+                is StreamResult.Completed -> { }
                 is StreamResult.Error -> error = result.message
             }
         }
@@ -229,25 +239,26 @@ class NexaService(private val context: Context) {
      * Stop any ongoing generation.
      */
     fun stopGeneration() {
-        vlmWrapper?.stopStream()
+        modelScope.launch {
+            vlmWrapper?.stopStream()
+        }
     }
 
     /**
      * Unload the model and free resources.
      */
     fun unloadModel() {
-        vlmWrapper?.let {
-            it.stopStream()
-            it.destroy()
+        modelScope.launch {
+            vlmWrapper?.let {
+                it.stopStream()
+                it.destroy()
+            }
+            vlmWrapper = null
+            isModelLoaded = false
+            Log.d(TAG, "Model unloaded")
         }
-        vlmWrapper = null
-        isModelLoaded = false
-        Log.d(TAG, "Model unloaded")
     }
 
-    /**
-     * Clean up all resources.
-     */
     fun destroy() {
         unloadModel()
         isInitialized = false
@@ -258,7 +269,6 @@ class NexaService(private val context: Context) {
     fun hasModelLoaded(): Boolean = isModelLoaded
     fun getCurrentPlugin(): String = currentPluginId
 
-    // Callback interfaces
     interface InitCallback {
         fun onSuccess()
         fun onFailure(reason: String)
@@ -269,7 +279,6 @@ class NexaService(private val context: Context) {
         fun onFailure(reason: String)
     }
 
-    // Stream result sealed class
     sealed class StreamResult {
         data class Token(val text: String) : StreamResult()
         data class Completed(
