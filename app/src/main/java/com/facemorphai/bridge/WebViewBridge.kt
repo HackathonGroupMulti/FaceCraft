@@ -50,6 +50,12 @@ class WebViewBridge(
             settings.loadWithOverviewMode = true
             settings.useWideViewPort = true
 
+            // Allow local file access for GLTF loader
+            @Suppress("DEPRECATION")
+            settings.allowFileAccessFromFileURLs = true
+            @Suppress("DEPRECATION")
+            settings.allowUniversalAccessFromFileURLs = true
+
             // Disable zoom for better UX
             settings.setSupportZoom(false)
             settings.builtInZoomControls = false

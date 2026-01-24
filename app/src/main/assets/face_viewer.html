@@ -81,6 +81,14 @@
         // FaceCraft 3D Viewer
         // Handles 3D face rendering and morph targets
         // ============================================
+        //
+        // 3D Model Credits:
+        // "Face" (https://skfb.ly/oKyPu) by hannibalhero8
+        // Licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+        //
+        // "Woman Face" (https://skfb.ly/pr8CK) by Rena
+        // Licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+        // ============================================
 
         // Android Bridge reference
         const Android = window.AndroidBridge || {
@@ -97,6 +105,8 @@
         // Global state
         let scene, camera, renderer, controls;
         let faceMesh = null;
+        let currentModel = null;
+        let allMeshes = [];
         let morphTargets = {};
         let currentMorphValues = {};
         let animationId = null;
@@ -253,16 +263,20 @@
             loader.load(
                 path,
                 (gltf) => {
+                    Android.log('GLTF loaded successfully');
                     onModelLoaded(gltf);
                 },
                 (progress) => {
-                    const percent = (progress.loaded / progress.total * 100).toFixed(0);
-                    Android.log('Loading progress: ' + percent + '%');
+                    if (progress.total > 0) {
+                        const percent = (progress.loaded / progress.total * 100).toFixed(0);
+                        Android.log('Loading progress: ' + percent + '%');
+                    }
                 },
                 (error) => {
-                    Android.error('Model load error: ' + error.message);
-                    showError('Failed to load model: ' + error.message);
-                    Android.onModelLoadError(error.message);
+                    const errorMsg = error.message || error.toString() || 'Unknown error';
+                    Android.error('Model load error: ' + errorMsg + ' | Path: ' + path);
+                    showError('Failed to load model');
+                    Android.onModelLoadError(errorMsg);
                 }
             );
         }
@@ -271,9 +285,18 @@
             Android.log('Loading template: ' + templateId);
             showLoading(true);
 
-            // For now, create a procedural head as placeholder
-            // In production, load actual GLTF models
-            createProceduralHead(templateId);
+            // Map template IDs to model paths (use full asset path for Android WebView)
+            const basePath = 'file:///android_asset/';
+            const modelPaths = {
+                'male': basePath + 'models/face/scene.gltf',
+                'female': basePath + 'models/woman_face/scene.gltf',
+                'stylized': basePath + 'models/face/scene.gltf',
+                'default': basePath + 'models/face/scene.gltf'
+            };
+
+            const path = modelPaths[templateId] || modelPaths['default'];
+            Android.log('Full model path: ' + path);
+            loadModel(path);
         }
 
         function createProceduralHead(style) {
@@ -355,21 +378,32 @@
         }
 
         function onModelLoaded(gltf) {
-            // Remove existing mesh
-            if (faceMesh) {
-                scene.remove(faceMesh);
+            // Remove existing model
+            if (currentModel) {
+                scene.remove(currentModel);
+                currentModel = null;
             }
+            faceMesh = null;
+            allMeshes = [];
 
             const model = gltf.scene;
 
-            // Find the face mesh (usually the first mesh with morph targets)
+            // Collect all meshes and store original positions for morphing
             model.traverse((child) => {
                 if (child.isMesh) {
+                    allMeshes.push(child);
+
+                    // Store original positions for procedural morphing
+                    if (child.geometry && child.geometry.attributes.position) {
+                        child.userData.originalPositions = child.geometry.attributes.position.array.slice();
+                    }
+
+                    // Use first mesh as main face mesh
                     if (!faceMesh) {
                         faceMesh = child;
                     }
 
-                    // Store morph target dictionary
+                    // Check for morph targets
                     if (child.morphTargetDictionary) {
                         morphTargets = child.morphTargetDictionary;
                         Android.log('Found morph targets: ' + Object.keys(morphTargets).join(', '));
@@ -382,18 +416,24 @@
             const center = box.getCenter(new THREE.Vector3());
             const size = box.getSize(new THREE.Vector3());
 
+            // Scale to fit nicely in view
             const maxDim = Math.max(size.x, size.y, size.z);
-            const scale = 2 / maxDim;
+            const scale = 2.5 / maxDim;
             model.scale.setScalar(scale);
-            model.position.sub(center.multiplyScalar(scale));
 
+            // Center the model
+            box.setFromObject(model);
+            box.getCenter(center);
+            model.position.sub(center);
+
+            currentModel = model;
             scene.add(model);
 
             // Initialize morph values
             resetMorphValues();
 
             showLoading(false);
-            Android.log('Model loaded successfully');
+            Android.log('Model loaded successfully with ' + allMeshes.length + ' meshes');
             Android.onModelLoaded();
         }
 
@@ -444,25 +484,160 @@
         }
 
         function applyProceduralMorph(paramName, value) {
-            if (!faceMesh || !faceMesh.userData.originalPositions) return;
+            // Apply morphing to all meshes in the model
+            for (const mesh of allMeshes) {
+                if (!mesh.userData.originalPositions) continue;
 
-            const positions = faceMesh.geometry.attributes.position;
-            const original = faceMesh.userData.originalPositions;
+                const positions = mesh.geometry.attributes.position;
+                const original = mesh.userData.originalPositions;
 
-            // Create a copy of original positions
-            const newPositions = new Float32Array(original);
+                // Create a copy of original positions
+                const newPositions = new Float32Array(original);
 
-            // Apply all current morph values
-            for (const [name, val] of Object.entries(currentMorphValues)) {
-                applyMorphToPositions(newPositions, name, val);
+                // Get bounding box for normalization
+                const bbox = mesh.userData.bbox || computeMeshBounds(original);
+                mesh.userData.bbox = bbox;
+
+                // Apply all current morph values
+                for (const [name, val] of Object.entries(currentMorphValues)) {
+                    applyMorphToPositionsNormalized(newPositions, name, val, bbox);
+                }
+
+                // Update geometry
+                for (let i = 0; i < positions.count; i++) {
+                    positions.setXYZ(i, newPositions[i * 3], newPositions[i * 3 + 1], newPositions[i * 3 + 2]);
+                }
+                positions.needsUpdate = true;
+                mesh.geometry.computeVertexNormals();
             }
 
-            // Update geometry
-            for (let i = 0; i < positions.count; i++) {
-                positions.setXYZ(i, newPositions[i * 3], newPositions[i * 3 + 1], newPositions[i * 3 + 2]);
+            // Fallback for procedural mesh
+            if (faceMesh && faceMesh.userData.originalPositions && allMeshes.length === 0) {
+                const positions = faceMesh.geometry.attributes.position;
+                const original = faceMesh.userData.originalPositions;
+                const newPositions = new Float32Array(original);
+
+                for (const [name, val] of Object.entries(currentMorphValues)) {
+                    applyMorphToPositions(newPositions, name, val);
+                }
+
+                for (let i = 0; i < positions.count; i++) {
+                    positions.setXYZ(i, newPositions[i * 3], newPositions[i * 3 + 1], newPositions[i * 3 + 2]);
+                }
+                positions.needsUpdate = true;
+                faceMesh.geometry.computeVertexNormals();
             }
-            positions.needsUpdate = true;
-            faceMesh.geometry.computeVertexNormals();
+        }
+
+        function computeMeshBounds(positions) {
+            let minX = Infinity, maxX = -Infinity;
+            let minY = Infinity, maxY = -Infinity;
+            let minZ = Infinity, maxZ = -Infinity;
+
+            for (let i = 0; i < positions.length; i += 3) {
+                minX = Math.min(minX, positions[i]);
+                maxX = Math.max(maxX, positions[i]);
+                minY = Math.min(minY, positions[i + 1]);
+                maxY = Math.max(maxY, positions[i + 1]);
+                minZ = Math.min(minZ, positions[i + 2]);
+                maxZ = Math.max(maxZ, positions[i + 2]);
+            }
+
+            return {
+                minX, maxX, minY, maxY, minZ, maxZ,
+                centerX: (minX + maxX) / 2,
+                centerY: (minY + maxY) / 2,
+                centerZ: (minZ + maxZ) / 2,
+                sizeX: maxX - minX,
+                sizeY: maxY - minY,
+                sizeZ: maxZ - minZ
+            };
+        }
+
+        function applyMorphToPositionsNormalized(positions, paramName, value, bbox) {
+            const factor = value - 1.0;
+            const count = positions.length / 3;
+
+            for (let i = 0; i < count; i++) {
+                const x = positions[i * 3];
+                const y = positions[i * 3 + 1];
+                const z = positions[i * 3 + 2];
+
+                // Normalize coordinates to -1 to 1 range
+                const nx = (x - bbox.centerX) / (bbox.sizeX / 2);
+                const ny = (y - bbox.centerY) / (bbox.sizeY / 2);
+                const nz = (z - bbox.centerZ) / (bbox.sizeZ / 2);
+
+                // Apply transformations based on normalized coordinates
+                switch (paramName) {
+                    case 'faceWidth':
+                        if (nz > -0.3) {
+                            positions[i * 3] = x + (x - bbox.centerX) * factor * 0.1;
+                        }
+                        break;
+
+                    case 'faceLength':
+                        if (nz > -0.3) {
+                            positions[i * 3 + 1] = y + (y - bbox.centerY) * factor * 0.1;
+                        }
+                        break;
+
+                    case 'jawWidth':
+                        if (ny < -0.3 && nz > -0.3) {
+                            positions[i * 3] = x + (x - bbox.centerX) * factor * 0.15;
+                        }
+                        break;
+
+                    case 'cheekWidth':
+                        if (ny > -0.2 && ny < 0.3 && Math.abs(nx) > 0.3 && nz > 0) {
+                            positions[i * 3] = x + (x - bbox.centerX) * factor * 0.12;
+                        }
+                        break;
+
+                    case 'noseWidth':
+                        if (ny > -0.2 && ny < 0.3 && Math.abs(nx) < 0.25 && nz > 0.4) {
+                            positions[i * 3] = x + (x - bbox.centerX) * factor * 0.15;
+                        }
+                        break;
+
+                    case 'noseLength':
+                        if (ny > -0.3 && ny < 0.2 && Math.abs(nx) < 0.2 && nz > 0.5) {
+                            positions[i * 3 + 2] = z + (z - bbox.centerZ) * factor * 0.12;
+                        }
+                        break;
+
+                    case 'foreheadHeight':
+                        if (ny > 0.5) {
+                            positions[i * 3 + 1] = y + (y - bbox.centerY) * factor * 0.08;
+                        }
+                        break;
+
+                    case 'chinLength':
+                        if (ny < -0.5) {
+                            positions[i * 3 + 1] = y + (y - bbox.centerY) * factor * 0.12;
+                        }
+                        break;
+
+                    case 'lipFullness':
+                        if (ny > -0.3 && ny < 0 && Math.abs(nx) < 0.25 && nz > 0.4) {
+                            positions[i * 3 + 2] = z + (z - bbox.centerZ) * factor * 0.08;
+                        }
+                        break;
+
+                    case 'eyeSize':
+                        if (ny > 0.2 && ny < 0.5 && Math.abs(nx) > 0.15 && nz > 0.2) {
+                            positions[i * 3] = x + (x - bbox.centerX) * factor * 0.05;
+                            positions[i * 3 + 1] = y + (y - bbox.centerY) * factor * 0.05;
+                        }
+                        break;
+
+                    case 'eyeSpacing':
+                        if (ny > 0.2 && ny < 0.5 && nz > 0.2) {
+                            positions[i * 3] = x + (x - bbox.centerX) * factor * 0.1;
+                        }
+                        break;
+                }
+            }
         }
 
         function applyMorphToPositions(positions, paramName, value) {
