@@ -2,8 +2,8 @@ package com.facemorphai.service
 
 import android.content.Context
 import android.util.Log
-import ai.nexa.core.LlmWrapper
 import ai.nexa.core.NexaSdk
+import ai.nexa.core.LlmWrapper
 import ai.nexa.core.data.ChatMessage
 import ai.nexa.core.data.GenerationConfig
 import ai.nexa.core.data.LlmCreateInput
@@ -11,6 +11,7 @@ import ai.nexa.core.data.LlmStreamResult
 import ai.nexa.core.data.ModelConfig
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import java.io.File
 
 /**
  * Service for managing NexaSDK initialization and LLM operations.
@@ -21,11 +22,10 @@ class NexaService(private val context: Context) {
     companion object {
         private const val TAG = "NexaService"
 
-        // Model configuration
+        // Model configuration - using the thinking model for better reasoning
         const val MODEL_NAME = "LFM2.5-1.2B-thinking-npu"
         const val PLUGIN_ID_NPU = "npu"
         const val PLUGIN_ID_CPU = "cpu"
-        const val PLUGIN_ID_GPU = "gpu"
 
         @Volatile
         private var instance: NexaService? = null
@@ -40,9 +40,11 @@ class NexaService(private val context: Context) {
     private var llmWrapper: LlmWrapper? = null
     private var isInitialized = false
     private var isModelLoaded = false
-
-    // Track current plugin for fallback logic
     private var currentPluginId: String = PLUGIN_ID_NPU
+
+    // Model paths
+    private val modelsDir: File
+        get() = File(context.filesDir, "models")
 
     /**
      * Initialize the NexaSDK. Must be called before any other operations.
@@ -53,27 +55,42 @@ class NexaService(private val context: Context) {
             return
         }
 
-        NexaSdk.getInstance().init(context, object : NexaSdk.InitCallback {
-            override fun onSuccess() {
-                isInitialized = true
-                Log.d(TAG, "NexaSDK initialized successfully")
-                callback.onSuccess()
-            }
+        try {
+            NexaSdk.getInstance().init(context)
+            isInitialized = true
+            Log.d(TAG, "NexaSDK initialized successfully")
+            callback.onSuccess()
+        } catch (e: Exception) {
+            Log.e(TAG, "NexaSDK initialization failed: ${e.message}")
+            callback.onFailure(e.message ?: "Unknown error")
+        }
+    }
 
-            override fun onFailure(reason: String) {
-                Log.e(TAG, "NexaSDK initialization failed: $reason")
-                callback.onFailure(reason)
-            }
-        })
+    /**
+     * Get the path where models should be stored.
+     */
+    fun getModelsDirectory(): File {
+        if (!modelsDir.exists()) {
+            modelsDir.mkdirs()
+        }
+        return modelsDir
+    }
+
+    /**
+     * Check if the model files exist locally.
+     */
+    fun isModelDownloaded(modelName: String): Boolean {
+        val modelDir = File(modelsDir, modelName)
+        return modelDir.exists() && modelDir.listFiles()?.isNotEmpty() == true
     }
 
     /**
      * Load the LLM model for face morph generation.
-     * Attempts NPU first, falls back to CPU if NPU unavailable.
+     * @param modelPath Path to the model folder containing .nexa files
+     * @param preferNpu Whether to prefer NPU acceleration (requires Snapdragon 8 Elite)
      */
     fun loadModel(
         modelPath: String,
-        tokenizerPath: String,
         preferNpu: Boolean = true,
         callback: ModelLoadCallback
     ) {
@@ -90,80 +107,80 @@ class NexaService(private val context: Context) {
         currentPluginId = if (preferNpu) PLUGIN_ID_NPU else PLUGIN_ID_CPU
 
         val config = ModelConfig(
-            nCtx = 2048,  // Context window
-            nGpuLayers = 0,
-            enable_thinking = true,  // Enable thinking for better reasoning
-            npu_lib_folder_path = context.applicationInfo.nativeLibraryDir,
-            npu_model_folder_path = modelPath
+            max_tokens = 2048,
+            enable_thinking = true  // Enable thinking for better reasoning
         )
 
-        LlmWrapper.builder()
-            .llmCreateInput(
-                LlmCreateInput(
-                    model_name = MODEL_NAME,
-                    model_path = modelPath,
-                    tokenizer_path = tokenizerPath,
-                    config = config,
-                    plugin_id = currentPluginId
+        try {
+            LlmWrapper.builder()
+                .llmCreateInput(
+                    LlmCreateInput(
+                        model_name = MODEL_NAME,
+                        model_path = modelPath,
+                        config = config,
+                        plugin_id = currentPluginId
+                    )
                 )
-            )
-            .build()
-            .onSuccess { wrapper ->
-                llmWrapper = wrapper
-                isModelLoaded = true
-                Log.d(TAG, "Model loaded successfully with plugin: $currentPluginId")
-                callback.onSuccess()
-            }
-            .onFailure { error ->
-                Log.e(TAG, "Model load failed with $currentPluginId: ${error.message}")
-
-                // Fallback to CPU if NPU failed
-                if (currentPluginId == PLUGIN_ID_NPU) {
-                    Log.d(TAG, "Attempting CPU fallback...")
-                    loadModelWithPlugin(modelPath, tokenizerPath, PLUGIN_ID_CPU, callback)
-                } else {
-                    callback.onFailure(error.message ?: "Unknown error loading model")
+                .build()
+                .onSuccess { wrapper ->
+                    llmWrapper = wrapper
+                    isModelLoaded = true
+                    Log.d(TAG, "Model loaded successfully with plugin: $currentPluginId")
+                    callback.onSuccess()
                 }
-            }
+                .onFailure { error ->
+                    Log.e(TAG, "Model load failed with $currentPluginId: ${error.message}")
+
+                    // Fallback to CPU if NPU failed
+                    if (currentPluginId == PLUGIN_ID_NPU) {
+                        Log.d(TAG, "Attempting CPU fallback...")
+                        loadModelWithPlugin(modelPath, PLUGIN_ID_CPU, callback)
+                    } else {
+                        callback.onFailure(error.message ?: "Unknown error loading model")
+                    }
+                }
+        } catch (e: Exception) {
+            Log.e(TAG, "Exception loading model: ${e.message}")
+            callback.onFailure(e.message ?: "Exception loading model")
+        }
     }
 
     private fun loadModelWithPlugin(
         modelPath: String,
-        tokenizerPath: String,
         pluginId: String,
         callback: ModelLoadCallback
     ) {
         currentPluginId = pluginId
 
         val config = ModelConfig(
-            nCtx = 2048,
-            nGpuLayers = if (pluginId == PLUGIN_ID_GPU) 32 else 0,
-            enable_thinking = true,
-            npu_lib_folder_path = context.applicationInfo.nativeLibraryDir,
-            npu_model_folder_path = ""
+            max_tokens = 2048,
+            enable_thinking = true
         )
 
-        LlmWrapper.builder()
-            .llmCreateInput(
-                LlmCreateInput(
-                    model_name = MODEL_NAME,
-                    model_path = modelPath,
-                    tokenizer_path = tokenizerPath,
-                    config = config,
-                    plugin_id = pluginId
+        try {
+            LlmWrapper.builder()
+                .llmCreateInput(
+                    LlmCreateInput(
+                        model_name = MODEL_NAME,
+                        model_path = modelPath,
+                        config = config,
+                        plugin_id = pluginId
+                    )
                 )
-            )
-            .build()
-            .onSuccess { wrapper ->
-                llmWrapper = wrapper
-                isModelLoaded = true
-                Log.d(TAG, "Model loaded with fallback plugin: $pluginId")
-                callback.onSuccess()
-            }
-            .onFailure { error ->
-                Log.e(TAG, "Model load failed with $pluginId: ${error.message}")
-                callback.onFailure(error.message ?: "Unknown error")
-            }
+                .build()
+                .onSuccess { wrapper ->
+                    llmWrapper = wrapper
+                    isModelLoaded = true
+                    Log.d(TAG, "Model loaded with fallback plugin: $pluginId")
+                    callback.onSuccess()
+                }
+                .onFailure { error ->
+                    Log.e(TAG, "Model load failed with $pluginId: ${error.message}")
+                    callback.onFailure(error.message ?: "Unknown error")
+                }
+        } catch (e: Exception) {
+            callback.onFailure(e.message ?: "Exception loading model")
+        }
     }
 
     /**
@@ -181,50 +198,49 @@ class NexaService(private val context: Context) {
             return@flow
         }
 
-        val chatList = arrayListOf(
+        val chatList = arrayOf(
             ChatMessage("system", systemPrompt),
             ChatMessage("user", userPrompt)
         )
 
-        wrapper.applyChatTemplate(chatList.toTypedArray(), null, false)
-            .onSuccess { templateOutput ->
-                val config = GenerationConfig(
-                    maxTokens = maxTokens,
-                    stopWords = arrayOf("```", "\n\n\n"),
-                    imagePaths = null,
-                    imageCount = 0,
-                    audioPaths = null,
-                    audioCount = 0
-                )
+        try {
+            wrapper.applyChatTemplate(chatList, null, false)
+                .onSuccess { templateOutput ->
+                    val config = GenerationConfig(
+                        maxTokens = maxTokens,
+                        stopWords = arrayOf("```", "\n\n\n")
+                    )
 
-                wrapper.generateStreamFlow(templateOutput.formattedText, config)
-                    .collect { result ->
-                        when (result) {
-                            is LlmStreamResult.Token -> {
-                                emit(StreamResult.Token(result.text))
-                            }
-                            is LlmStreamResult.Completed -> {
-                                emit(StreamResult.Completed(
-                                    promptTokens = result.profile.promptTokens,
-                                    generatedTokens = result.profile.generatedTokens,
-                                    ttftMs = result.profile.ttftMs,
-                                    decodingSpeed = result.profile.decodingSpeed
-                                ))
-                            }
-                            is LlmStreamResult.Error -> {
-                                emit(StreamResult.Error(result.message))
+                    wrapper.generateStreamFlow(templateOutput.formattedText, config)
+                        .collect { result ->
+                            when (result) {
+                                is LlmStreamResult.Token -> {
+                                    emit(StreamResult.Token(result.text))
+                                }
+                                is LlmStreamResult.Completed -> {
+                                    emit(StreamResult.Completed(
+                                        promptTokens = result.profile.promptTokens,
+                                        generatedTokens = result.profile.generatedTokens,
+                                        ttftMs = result.profile.ttftMs,
+                                        decodingSpeed = result.profile.decodingSpeed
+                                    ))
+                                }
+                                is LlmStreamResult.Error -> {
+                                    emit(StreamResult.Error(result.message))
+                                }
                             }
                         }
-                    }
-            }
-            .onFailure { error ->
-                emit(StreamResult.Error(error.message ?: "Chat template failed"))
-            }
+                }
+                .onFailure { error ->
+                    emit(StreamResult.Error(error.message ?: "Chat template failed"))
+                }
+        } catch (e: Exception) {
+            emit(StreamResult.Error(e.message ?: "Generation failed"))
+        }
     }
 
     /**
      * Generate a complete response (non-streaming).
-     * Useful when you need the full JSON output at once.
      */
     suspend fun generate(
         systemPrompt: String,
@@ -257,7 +273,7 @@ class NexaService(private val context: Context) {
     }
 
     /**
-     * Reset the model state (clear conversation history).
+     * Reset the model state.
      */
     fun reset() {
         llmWrapper?.reset()
@@ -285,19 +301,8 @@ class NexaService(private val context: Context) {
         instance = null
     }
 
-    /**
-     * Check if the SDK is initialized.
-     */
     fun isReady(): Boolean = isInitialized
-
-    /**
-     * Check if a model is loaded.
-     */
     fun hasModelLoaded(): Boolean = isModelLoaded
-
-    /**
-     * Get the current plugin being used (npu, cpu, gpu).
-     */
     fun getCurrentPlugin(): String = currentPluginId
 
     // Callback interfaces
