@@ -56,6 +56,9 @@ class WebViewBridge(
             @Suppress("DEPRECATION")
             settings.allowUniversalAccessFromFileURLs = true
 
+            // Allow mixed content (HTTPS CDN + file:// assets)
+            settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+
             // Disable zoom for better UX
             settings.setSupportZoom(false)
             settings.builtInZoomControls = false

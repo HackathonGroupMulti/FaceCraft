@@ -94,40 +94,15 @@
       "uri": "scene.bin"
     }
   ],
-  "extensionsRequired": [
-    "KHR_materials_pbrSpecularGlossiness"
-  ],
-  "extensionsUsed": [
-    "KHR_materials_pbrSpecularGlossiness"
-  ],
-  "images": [
-    {
-      "uri": "textures/material_0_specularGlossiness.jpeg"
-    }
-  ],
   "materials": [
     {
       "doubleSided": true,
-      "extensions": {
-        "KHR_materials_pbrSpecularGlossiness": {
-          "diffuseFactor": [
-            1.0,
-            1.0,
-            1.0,
-            1.0
-          ],
-          "glossinessFactor": 0.4,
-          "specularFactor": [
-            1.0,
-            1.0,
-            1.0
-          ],
-          "specularGlossinessTexture": {
-            "index": 0
-          }
-        }
-      },
-      "name": "material_0"
+      "name": "material_0",
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [0.83, 0.65, 0.52, 1.0],
+        "metallicFactor": 0.0,
+        "roughnessFactor": 0.6
+      }
     }
   ],
   "meshes": [
@@ -198,12 +173,6 @@
       "nodes": [
         0
       ]
-    }
-  ],
-  "textures": [
-    {
-      "sampler": 0,
-      "source": 0
     }
   ]
 }

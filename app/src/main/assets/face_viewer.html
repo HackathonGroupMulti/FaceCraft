@@ -256,7 +256,20 @@
 
         function loadModel(path) {
             Android.log('Loading model: ' + path);
+            Android.log('Current location: ' + window.location.href);
             showLoading(true);
+
+            // Check if THREE and GLTFLoader are available
+            if (typeof THREE === 'undefined') {
+                Android.error('THREE.js not loaded - check internet connection');
+                showError('3D library not loaded');
+                return;
+            }
+            if (typeof THREE.GLTFLoader === 'undefined') {
+                Android.error('GLTFLoader not available');
+                showError('GLTF loader not loaded');
+                return;
+            }
 
             const loader = new THREE.GLTFLoader();
 
@@ -270,12 +283,21 @@
                     if (progress.total > 0) {
                         const percent = (progress.loaded / progress.total * 100).toFixed(0);
                         Android.log('Loading progress: ' + percent + '%');
+                    } else {
+                        Android.log('Loading... (size unknown)');
                     }
                 },
                 (error) => {
-                    const errorMsg = error.message || error.toString() || 'Unknown error';
-                    Android.error('Model load error: ' + errorMsg + ' | Path: ' + path);
-                    showError('Failed to load model');
+                    let errorMsg = 'Unknown error';
+                    if (error) {
+                        if (error.message) errorMsg = error.message;
+                        else if (error.target && error.target.status) errorMsg = 'HTTP ' + error.target.status;
+                        else errorMsg = JSON.stringify(error);
+                    }
+                    Android.error('Model load error: ' + errorMsg);
+                    Android.error('Failed path: ' + path);
+                    Android.error('Full URL attempted: ' + new URL(path, window.location.href).href);
+                    showError('Failed to load model: ' + errorMsg);
                     Android.onModelLoadError(errorMsg);
                 }
             );
@@ -285,17 +307,18 @@
             Android.log('Loading template: ' + templateId);
             showLoading(true);
 
-            // Map template IDs to model paths (use full asset path for Android WebView)
-            const basePath = 'file:///android_asset/';
+            // Map template IDs to model paths (use relative paths from HTML location)
+            // Note: woman_face uses standard PBR materials (more compatible)
+            // face model requires KHR_materials_pbrSpecularGlossiness extension
             const modelPaths = {
-                'male': basePath + 'models/face/scene.gltf',
-                'female': basePath + 'models/woman_face/scene.gltf',
-                'stylized': basePath + 'models/face/scene.gltf',
-                'default': basePath + 'models/face/scene.gltf'
+                'male': 'models/face/scene.gltf',
+                'female': 'models/woman_face/scene.gltf',
+                'stylized': 'models/woman_face/scene.gltf',
+                'default': 'models/woman_face/scene.gltf'  // woman_face is more compatible
             };
 
             const path = modelPaths[templateId] || modelPaths['default'];
-            Android.log('Full model path: ' + path);
+            Android.log('Loading model from relative path: ' + path);
             loadModel(path);
         }
 
