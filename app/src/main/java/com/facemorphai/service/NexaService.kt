@@ -3,18 +3,16 @@ package com.facemorphai.service
 import android.content.Context
 import android.util.Log
 import ai.nexa.core.NexaSdk
-import ai.nexa.core.LlmWrapper
-import ai.nexa.core.data.ChatMessage
+import ai.nexa.core.VlmWrapper
 import ai.nexa.core.data.GenerationConfig
-import ai.nexa.core.data.LlmCreateInput
-import ai.nexa.core.data.LlmStreamResult
+import ai.nexa.core.data.VlmCreateInput
 import ai.nexa.core.data.ModelConfig
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import java.io.File
 
 /**
- * Service for managing NexaSDK initialization and LLM operations.
+ * Service for managing NexaSDK initialization and VLM operations.
  * Handles model loading, inference, and cleanup.
  */
 class NexaService(private val context: Context) {
@@ -22,8 +20,8 @@ class NexaService(private val context: Context) {
     companion object {
         private const val TAG = "NexaService"
 
-        // Model configuration - using the thinking model for better reasoning
-        const val MODEL_NAME = "LFM2.5-1.2B-thinking-npu"
+        // Model configuration - using OmniNeural-4B for NPU
+        const val MODEL_NAME = "omni-neural"
         const val PLUGIN_ID_NPU = "npu"
         const val PLUGIN_ID_CPU = "cpu"
 
@@ -37,7 +35,7 @@ class NexaService(private val context: Context) {
         }
     }
 
-    private var llmWrapper: LlmWrapper? = null
+    private var vlmWrapper: VlmWrapper? = null
     private var isInitialized = false
     private var isModelLoaded = false
     private var currentPluginId: String = PLUGIN_ID_NPU
@@ -68,6 +66,7 @@ class NexaService(private val context: Context) {
 
     /**
      * Get the path where models should be stored.
+     * Example: /data/data/com.facemorphai/files/models/
      */
     fun getModelsDirectory(): File {
         if (!modelsDir.exists()) {
@@ -85,8 +84,8 @@ class NexaService(private val context: Context) {
     }
 
     /**
-     * Load the LLM model for face morph generation.
-     * @param modelPath Path to the model folder containing .nexa files
+     * Load the VLM model for face morph generation.
+     * @param modelPath Absolute path to the .nexa model file
      * @param preferNpu Whether to prefer NPU acceleration (requires Snapdragon 8 Elite)
      */
     fun loadModel(
@@ -108,13 +107,13 @@ class NexaService(private val context: Context) {
 
         val config = ModelConfig(
             max_tokens = 2048,
-            enable_thinking = true  // Enable thinking for better reasoning
+            enable_thinking = false
         )
 
         try {
-            LlmWrapper.builder()
-                .llmCreateInput(
-                    LlmCreateInput(
+            VlmWrapper.builder()
+                .vlmCreateInput(
+                    VlmCreateInput(
                         model_name = MODEL_NAME,
                         model_path = modelPath,
                         config = config,
@@ -123,7 +122,7 @@ class NexaService(private val context: Context) {
                 )
                 .build()
                 .onSuccess { wrapper ->
-                    llmWrapper = wrapper
+                    vlmWrapper = wrapper
                     isModelLoaded = true
                     Log.d(TAG, "Model loaded successfully with plugin: $currentPluginId")
                     callback.onSuccess()
@@ -154,13 +153,13 @@ class NexaService(private val context: Context) {
 
         val config = ModelConfig(
             max_tokens = 2048,
-            enable_thinking = true
+            enable_thinking = false
         )
 
         try {
-            LlmWrapper.builder()
-                .llmCreateInput(
-                    LlmCreateInput(
+            VlmWrapper.builder()
+                .vlmCreateInput(
+                    VlmCreateInput(
                         model_name = MODEL_NAME,
                         model_path = modelPath,
                         config = config,
@@ -169,7 +168,7 @@ class NexaService(private val context: Context) {
                 )
                 .build()
                 .onSuccess { wrapper ->
-                    llmWrapper = wrapper
+                    vlmWrapper = wrapper
                     isModelLoaded = true
                     Log.d(TAG, "Model loaded with fallback plugin: $pluginId")
                     callback.onSuccess()
@@ -184,73 +183,57 @@ class NexaService(private val context: Context) {
     }
 
     /**
-     * Generate a response from the LLM using chat messages.
+     * Generate a response from the VLM.
      * Returns a Flow that emits tokens as they're generated.
      */
     fun generateStream(
-        systemPrompt: String,
-        userPrompt: String,
+        prompt: String,
         maxTokens: Int = 512
     ): Flow<StreamResult> = flow {
-        val wrapper = llmWrapper
+        val wrapper = vlmWrapper
         if (wrapper == null) {
             emit(StreamResult.Error("Model not loaded"))
             return@flow
         }
 
-        val chatList = arrayOf(
-            ChatMessage("system", systemPrompt),
-            ChatMessage("user", userPrompt)
-        )
-
         try {
-            wrapper.applyChatTemplate(chatList, null, false)
-                .onSuccess { templateOutput ->
-                    val config = GenerationConfig(
-                        maxTokens = maxTokens,
-                        stopWords = arrayOf("```", "\n\n\n")
-                    )
+            val config = GenerationConfig()
 
-                    wrapper.generateStreamFlow(templateOutput.formattedText, config)
-                        .collect { result ->
-                            when (result) {
-                                is LlmStreamResult.Token -> {
-                                    emit(StreamResult.Token(result.text))
-                                }
-                                is LlmStreamResult.Completed -> {
-                                    emit(StreamResult.Completed(
-                                        promptTokens = result.profile.promptTokens,
-                                        generatedTokens = result.profile.generatedTokens,
-                                        ttftMs = result.profile.ttftMs,
-                                        decodingSpeed = result.profile.decodingSpeed
-                                    ))
-                                }
-                                is LlmStreamResult.Error -> {
-                                    emit(StreamResult.Error(result.message))
-                                }
-                            }
-                        }
+            wrapper.generateStreamFlow(prompt, config)
+                .collect { result ->
+                    // Emit token text as it streams
+                    emit(StreamResult.Token(result.toString()))
                 }
-                .onFailure { error ->
-                    emit(StreamResult.Error(error.message ?: "Chat template failed"))
-                }
+
+            emit(StreamResult.Completed(0, 0, 0, 0f))
         } catch (e: Exception) {
             emit(StreamResult.Error(e.message ?: "Generation failed"))
         }
     }
 
     /**
+     * Generate with system prompt prepended to user prompt.
+     */
+    fun generateWithSystemPrompt(
+        systemPrompt: String,
+        userPrompt: String,
+        maxTokens: Int = 512
+    ): Flow<StreamResult> {
+        val fullPrompt = "$systemPrompt\n\nUser: $userPrompt\n\nAssistant:"
+        return generateStream(fullPrompt, maxTokens)
+    }
+
+    /**
      * Generate a complete response (non-streaming).
      */
     suspend fun generate(
-        systemPrompt: String,
-        userPrompt: String,
+        prompt: String,
         maxTokens: Int = 512
     ): Result<String> {
         val builder = StringBuilder()
         var error: String? = null
 
-        generateStream(systemPrompt, userPrompt, maxTokens).collect { result ->
+        generateStream(prompt, maxTokens).collect { result ->
             when (result) {
                 is StreamResult.Token -> builder.append(result.text)
                 is StreamResult.Completed -> { /* Done */ }
@@ -269,25 +252,18 @@ class NexaService(private val context: Context) {
      * Stop any ongoing generation.
      */
     fun stopGeneration() {
-        llmWrapper?.stopStream()
-    }
-
-    /**
-     * Reset the model state.
-     */
-    fun reset() {
-        llmWrapper?.reset()
+        vlmWrapper?.stopStream()
     }
 
     /**
      * Unload the model and free resources.
      */
     fun unloadModel() {
-        llmWrapper?.let {
+        vlmWrapper?.let {
             it.stopStream()
             it.destroy()
         }
-        llmWrapper = null
+        vlmWrapper = null
         isModelLoaded = false
         Log.d(TAG, "Model unloaded")
     }

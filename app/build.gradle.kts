@@ -1,6 +1,7 @@
 plugins {
     id("com.android.application")
-    id("org.jetbrains.kotlin.plugin.serialization")
+    id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.plugin.serialization") version "1.9.23"
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
@@ -32,8 +33,12 @@ android {
     }
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
+        sourceCompatibility = JavaVersion.VERSION_11
+        targetCompatibility = JavaVersion.VERSION_11
+    }
+
+    kotlinOptions {
+        jvmTarget = "11"
     }
 
     buildFeatures {
@@ -53,8 +58,8 @@ android {
 }
 
 dependencies {
-    // NexaSDK
-    implementation("ai.nexa:core:0.0.19")
+    // NexaSDK - using + for latest version like their demo
+    implementation("ai.nexa:core:+")
 
     // AndroidX Core
     implementation("androidx.core:core-ktx:1.17.0")

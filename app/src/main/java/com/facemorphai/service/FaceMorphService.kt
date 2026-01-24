@@ -11,7 +11,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * Service that handles face morph generation using the LLM.
+ * Service that handles face morph generation using the VLM.
  * Takes natural language descriptions and converts them to morph parameters.
  */
 class FaceMorphService(private val context: Context) {
@@ -169,16 +169,17 @@ You may modify any parameters as needed to achieve the described look.
         Log.d(TAG, "Region: ${request.region.displayName}")
 
         try {
-            // Generate response from LLM
+            // Generate response from VLM
+            // Combine system and user prompt for VLM
+            val fullPrompt = "$SYSTEM_PROMPT\n\n$userPrompt"
             val result = nexaService.generate(
-                systemPrompt = SYSTEM_PROMPT,
-                userPrompt = userPrompt,
+                prompt = fullPrompt,
                 maxTokens = 256  // JSON output should be small
             )
 
             result.fold(
                 onSuccess = { jsonOutput ->
-                    Log.d(TAG, "LLM output: $jsonOutput")
+                    Log.d(TAG, "VLM output: $jsonOutput")
 
                     // Parse the JSON output
                     val parseResult = parser.parse(jsonOutput)
@@ -207,7 +208,7 @@ You may modify any parameters as needed to achieve the described look.
                                 generationTimeMs = System.currentTimeMillis() - startTime,
                                 tokensGenerated = 0,
                                 success = false,
-                                errorMessage = "Failed to parse LLM output: ${parseError.message}"
+                                errorMessage = "Failed to parse VLM output: ${parseError.message}"
                             )
                         }
                     )
