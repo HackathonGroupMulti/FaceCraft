@@ -14,6 +14,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.material3.ExposedDropdownMenuAnchorType as MenuAnchorType
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -23,6 +24,7 @@ import com.facemorphai.bridge.WebViewBridge
 import com.facemorphai.model.FaceRegion
 import com.facemorphai.model.MorphRequest
 import com.facemorphai.service.FaceMorphService
+import com.facemorphai.service.ModelDownloader
 import com.facemorphai.service.NexaService
 import com.facemorphai.ui.theme.FaceCraftTheme
 import kotlinx.coroutines.launch
@@ -35,6 +37,7 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var nexaService: NexaService
     private lateinit var faceMorphService: FaceMorphService
+    private lateinit var modelDownloader: ModelDownloader
     private var webViewBridge: WebViewBridge? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -47,6 +50,7 @@ class MainActivity : ComponentActivity() {
 
         nexaService = NexaService.getInstance(this)
         faceMorphService = FaceMorphService(this)
+        modelDownloader = ModelDownloader(this)
 
         setContent {
             FaceCraftTheme {
@@ -67,6 +71,18 @@ class MainActivity : ComponentActivity() {
         var promptText by remember { mutableStateOf("") }
         var isLoading by remember { mutableStateOf(false) }
         var expanded by remember { mutableStateOf(false) }
+
+        // Model download state
+        var isModelDownloaded by remember { mutableStateOf(modelDownloader.isModelDownloaded()) }
+        var isDownloading by remember { mutableStateOf(false) }
+        var downloadProgress by remember { mutableStateOf(0) }
+        var downloadedMB by remember { mutableStateOf(0L) }
+        var totalMB by remember { mutableStateOf(0L) }
+        var downloadError by remember { mutableStateOf<String?>(null) }
+
+        // Model loading state
+        var isModelLoading by remember { mutableStateOf(false) }
+        var isModelReady by remember { mutableStateOf(false) }
 
         val context = LocalContext.current
 
@@ -135,6 +151,153 @@ class MainActivity : ComponentActivity() {
                         .padding(16.dp)
                         .verticalScroll(rememberScrollState())
                 ) {
+                    // AI Model Status Card
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (isModelReady)
+                                MaterialTheme.colorScheme.primaryContainer
+                            else
+                                MaterialTheme.colorScheme.surfaceVariant
+                        )
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "AI Model",
+                                        style = MaterialTheme.typography.labelLarge
+                                    )
+                                    Text(
+                                        text = when {
+                                            isModelReady -> "Ready"
+                                            isModelLoading -> "Loading..."
+                                            isDownloading -> "Downloading... ${downloadProgress}%"
+                                            isModelDownloaded -> "Downloaded (${modelDownloader.getModelSizeMB()} MB)"
+                                            else -> "Not downloaded"
+                                        },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+
+                                when {
+                                    isModelReady -> {
+                                        // Model is ready, show green indicator
+                                        Text(
+                                            text = "●",
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+                                    isModelLoading -> {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(24.dp),
+                                            strokeWidth = 2.dp
+                                        )
+                                    }
+                                    isDownloading -> {
+                                        CircularProgressIndicator(
+                                            progress = { downloadProgress / 100f },
+                                            modifier = Modifier.size(24.dp),
+                                            strokeWidth = 2.dp
+                                        )
+                                    }
+                                    isModelDownloaded -> {
+                                        Button(
+                                            onClick = {
+                                                isModelLoading = true
+                                                nexaService.initialize(object : NexaService.InitCallback {
+                                                    override fun onSuccess() {
+                                                        nexaService.loadModel(
+                                                            modelDownloader.getModelPath(),
+                                                            preferNpu = true,
+                                                            callback = object : NexaService.ModelLoadCallback {
+                                                                override fun onSuccess() {
+                                                                    isModelLoading = false
+                                                                    isModelReady = true
+                                                                }
+                                                                override fun onFailure(reason: String) {
+                                                                    isModelLoading = false
+                                                                    Toast.makeText(context, "Load failed: $reason", Toast.LENGTH_SHORT).show()
+                                                                }
+                                                            }
+                                                        )
+                                                    }
+                                                    override fun onFailure(reason: String) {
+                                                        isModelLoading = false
+                                                        Toast.makeText(context, "SDK init failed: $reason", Toast.LENGTH_SHORT).show()
+                                                    }
+                                                })
+                                            },
+                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                                        ) {
+                                            Text("Load", style = MaterialTheme.typography.labelMedium)
+                                        }
+                                    }
+                                    else -> {
+                                        Button(
+                                            onClick = {
+                                                isDownloading = true
+                                                downloadError = null
+                                                lifecycleScope.launch {
+                                                    modelDownloader.downloadModel().collect { state ->
+                                                        when (state) {
+                                                            is ModelDownloader.DownloadState.Starting -> {
+                                                                downloadProgress = 0
+                                                            }
+                                                            is ModelDownloader.DownloadState.Progress -> {
+                                                                downloadProgress = state.progress
+                                                                downloadedMB = state.downloadedMB
+                                                                totalMB = state.totalMB
+                                                            }
+                                                            is ModelDownloader.DownloadState.Completed -> {
+                                                                isDownloading = false
+                                                                isModelDownloaded = true
+                                                                downloadProgress = 100
+                                                            }
+                                                            is ModelDownloader.DownloadState.Error -> {
+                                                                isDownloading = false
+                                                                downloadError = state.message
+                                                                Toast.makeText(context, "Download failed: ${state.message}", Toast.LENGTH_SHORT).show()
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            },
+                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                                        ) {
+                                            Text("Download", style = MaterialTheme.typography.labelMedium)
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Download progress bar
+                            if (isDownloading && downloadProgress > 0) {
+                                Spacer(modifier = Modifier.height(8.dp))
+                                LinearProgressIndicator(
+                                    progress = { downloadProgress / 100f },
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                Text(
+                                    text = "${downloadedMB} MB / ${totalMB} MB",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.padding(top = 4.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
                     // Region Selector
                     ExposedDropdownMenuBox(
                         expanded = expanded,

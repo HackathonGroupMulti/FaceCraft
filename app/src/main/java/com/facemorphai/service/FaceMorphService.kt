@@ -146,20 +146,26 @@ You may modify any parameters as needed to achieve the described look.
     // Current state
     private var currentParameters = MorphParameters.DEFAULT
 
+    // Mock mode for demos when AI model is not available
+    private var useMockMode = true
+
+    /**
+     * Enable or disable mock mode (for demos without the AI model).
+     */
+    fun setMockMode(enabled: Boolean) {
+        useMockMode = enabled
+    }
+
     /**
      * Generate morph parameters from a natural language request.
      */
     suspend fun generateMorph(request: MorphRequest): MorphResult = withContext(Dispatchers.IO) {
         val startTime = System.currentTimeMillis()
 
-        if (!nexaService.hasModelLoaded()) {
-            return@withContext MorphResult(
-                parameters = currentParameters,
-                generationTimeMs = 0,
-                tokensGenerated = 0,
-                success = false,
-                errorMessage = "Model not loaded"
-            )
+        // Use mock mode if enabled or if model not loaded
+        if (useMockMode || !nexaService.hasModelLoaded()) {
+            Log.d(TAG, "Using mock mode for: ${request.prompt}")
+            return@withContext generateMockMorph(request, startTime)
         }
 
         // Build the user prompt with regional focus
@@ -295,5 +301,175 @@ Description: ${request.prompt}
             currentParameters = parser.fromMap(map)
         }
         return currentParameters
+    }
+
+    /**
+     * Generate mock morph parameters based on keyword matching.
+     * This provides a working demo without the AI model.
+     */
+    private fun generateMockMorph(request: MorphRequest, startTime: Long): MorphResult {
+        val prompt = request.prompt.lowercase()
+        val params = mutableMapOf<String, Float>()
+
+        // Eye-related keywords
+        if (prompt.contains("big") && prompt.contains("eye")) params["eyeSize"] = 1.3f
+        if (prompt.contains("small") && prompt.contains("eye")) params["eyeSize"] = 0.8f
+        if (prompt.contains("wide") && prompt.contains("eye")) params["eyeSpacing"] = 1.2f
+        if (prompt.contains("close") && prompt.contains("eye")) params["eyeSpacing"] = 0.85f
+        if (prompt.contains("mysterious") || prompt.contains("intense")) {
+            params["eyeSize"] = 0.95f
+            params["eyeSharpness"] = 0.85f
+            params["eyeAngle"] = 1.1f
+            params["eyebrowHeight"] = 0.9f
+        }
+        if (prompt.contains("innocent") || prompt.contains("cute")) {
+            params["eyeSize"] = 1.25f
+            params["eyeAngle"] = 0.95f
+        }
+
+        // Nose-related keywords
+        if (prompt.contains("big") && prompt.contains("nose")) params["noseWidth"] = 1.25f
+        if (prompt.contains("small") && prompt.contains("nose")) params["noseWidth"] = 0.8f
+        if (prompt.contains("long") && prompt.contains("nose")) params["noseLength"] = 1.2f
+        if (prompt.contains("short") && prompt.contains("nose")) params["noseLength"] = 0.85f
+        if (prompt.contains("button") && prompt.contains("nose")) {
+            params["noseLength"] = 0.85f
+            params["noseTip"] = 1.15f
+        }
+
+        // Jaw/chin-related keywords
+        if (prompt.contains("strong") && (prompt.contains("jaw") || prompt.contains("chin"))) {
+            params["jawWidth"] = 1.15f
+            params["jawSharpness"] = 1.3f
+            params["chinProtrusion"] = 1.1f
+        }
+        if (prompt.contains("soft") || prompt.contains("round")) {
+            params["jawSharpness"] = 0.8f
+        }
+        if (prompt.contains("masculine")) {
+            params["jawWidth"] = 1.2f
+            params["jawSharpness"] = 1.25f
+            params["chinWidth"] = 1.1f
+        }
+        if (prompt.contains("feminine")) {
+            params["jawSharpness"] = 0.75f
+            params["cheekHeight"] = 1.15f
+            params["lipFullness"] = 1.2f
+        }
+
+        // Lip-related keywords
+        if (prompt.contains("full") && prompt.contains("lip")) params["lipFullness"] = 1.35f
+        if (prompt.contains("thin") && prompt.contains("lip")) params["lipFullness"] = 0.75f
+        if (prompt.contains("wide") && prompt.contains("mouth")) params["lipWidth"] = 1.2f
+        if (prompt.contains("smile") || prompt.contains("happy")) params["mouthCorner"] = 1.2f
+
+        // Cheek-related keywords
+        if (prompt.contains("high") && prompt.contains("cheek")) params["cheekHeight"] = 1.25f
+        if (prompt.contains("hollow") || prompt.contains("gaunt")) params["cheekDepth"] = 0.7f
+        if (prompt.contains("chubby") || prompt.contains("full") && prompt.contains("cheek")) {
+            params["cheekWidth"] = 1.25f
+            params["cheekDepth"] = 1.2f
+        }
+
+        // Face shape keywords
+        if (prompt.contains("narrow") && prompt.contains("face")) params["faceWidth"] = 0.85f
+        if (prompt.contains("wide") && prompt.contains("face")) params["faceWidth"] = 1.2f
+        if (prompt.contains("long") && prompt.contains("face")) params["faceLength"] = 1.15f
+        if (prompt.contains("short") && prompt.contains("face")) params["faceLength"] = 0.9f
+
+        // Forehead keywords
+        if (prompt.contains("high") && prompt.contains("forehead")) params["foreheadHeight"] = 1.2f
+        if (prompt.contains("small") && prompt.contains("forehead")) params["foreheadHeight"] = 0.85f
+
+        // Eyebrow keywords
+        if (prompt.contains("thick") && prompt.contains("brow")) params["eyebrowThickness"] = 1.3f
+        if (prompt.contains("thin") && prompt.contains("brow")) params["eyebrowThickness"] = 0.7f
+        if (prompt.contains("arch")) params["eyebrowAngle"] = 1.25f
+        if (prompt.contains("straight") && prompt.contains("brow")) params["eyebrowAngle"] = 0.8f
+
+        // General style keywords
+        if (prompt.contains("angry") || prompt.contains("fierce")) {
+            params["eyebrowAngle"] = 0.8f
+            params["eyebrowHeight"] = 0.85f
+            params["mouthCorner"] = 0.85f
+        }
+        if (prompt.contains("sad") || prompt.contains("tired")) {
+            params["eyeAngle"] = 0.9f
+            params["mouthCorner"] = 0.85f
+        }
+        if (prompt.contains("surprise") || prompt.contains("shock")) {
+            params["eyeSize"] = 1.3f
+            params["eyebrowHeight"] = 1.25f
+        }
+
+        // Generic bigger/smaller
+        if (prompt.contains("bigger") || prompt.contains("larger")) {
+            when (request.region) {
+                FaceRegion.EYES -> params["eyeSize"] = 1.25f
+                FaceRegion.NOSE -> { params["noseWidth"] = 1.2f; params["noseLength"] = 1.15f }
+                FaceRegion.MOUTH_LIPS -> { params["lipFullness"] = 1.25f; params["mouthSize"] = 1.2f }
+                FaceRegion.JAW_CHIN -> { params["jawWidth"] = 1.2f; params["chinLength"] = 1.15f }
+                FaceRegion.CHEEKS -> params["cheekWidth"] = 1.2f
+                FaceRegion.FOREHEAD -> params["foreheadHeight"] = 1.2f
+                FaceRegion.FACE_SHAPE -> params["faceWidth"] = 1.15f
+                FaceRegion.ALL -> {}
+            }
+        }
+        if (prompt.contains("smaller") || prompt.contains("reduce")) {
+            when (request.region) {
+                FaceRegion.EYES -> params["eyeSize"] = 0.8f
+                FaceRegion.NOSE -> { params["noseWidth"] = 0.85f; params["noseLength"] = 0.9f }
+                FaceRegion.MOUTH_LIPS -> { params["lipFullness"] = 0.8f; params["mouthSize"] = 0.85f }
+                FaceRegion.JAW_CHIN -> { params["jawWidth"] = 0.85f; params["chinLength"] = 0.9f }
+                FaceRegion.CHEEKS -> params["cheekWidth"] = 0.85f
+                FaceRegion.FOREHEAD -> params["foreheadHeight"] = 0.85f
+                FaceRegion.FACE_SHAPE -> params["faceWidth"] = 0.9f
+                FaceRegion.ALL -> {}
+            }
+        }
+
+        // Fallback: if no keywords matched, apply a subtle change based on region
+        if (params.isEmpty()) {
+            Log.d(TAG, "No keywords matched, applying default region-based change")
+            when (request.region) {
+                FaceRegion.EYES -> params["eyeSize"] = 1.15f
+                FaceRegion.NOSE -> params["noseWidth"] = 1.1f
+                FaceRegion.MOUTH_LIPS -> params["lipFullness"] = 1.15f
+                FaceRegion.JAW_CHIN -> params["jawWidth"] = 1.1f
+                FaceRegion.CHEEKS -> params["cheekWidth"] = 1.1f
+                FaceRegion.FOREHEAD -> params["foreheadHeight"] = 1.1f
+                FaceRegion.FACE_SHAPE -> params["faceWidth"] = 1.1f
+                FaceRegion.ALL -> params["faceWidth"] = 1.1f
+            }
+        }
+
+        // Log detected keywords
+        Log.d(TAG, "Mock mode detected ${params.size} parameters: ${params.keys.joinToString()}")
+        params.forEach { (key, value) ->
+            Log.d(TAG, "  $key = $value")
+        }
+
+        // Apply intensity
+        val scaledParams = params.mapValues { (_, value) ->
+            val deviation = value - 1.0f
+            (1.0f + deviation * request.intensity).coerceIn(0.0f, 2.0f)
+        }
+
+        // Merge with current parameters
+        val newParams = parser.fromMap(scaledParams)
+        currentParameters = currentParameters.mergeWith(newParams)
+
+        // Log final parameters being sent
+        val nonDefault = currentParameters.getNonDefaultParameters()
+        Log.d(TAG, "Sending ${nonDefault.size} non-default parameters to WebView")
+
+        val endTime = System.currentTimeMillis()
+
+        return MorphResult(
+            parameters = currentParameters,
+            generationTimeMs = endTime - startTime,
+            tokensGenerated = 0,
+            success = true
+        )
     }
 }

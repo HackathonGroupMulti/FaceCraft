@@ -452,11 +452,15 @@
             currentModel = model;
             scene.add(model);
 
+            // Store original scale for model-level transformations
+            currentModel.userData.originalScale = currentModel.scale.clone();
+
             // Initialize morph values
             resetMorphValues();
 
             showLoading(false);
             Android.log('Model loaded successfully with ' + allMeshes.length + ' meshes');
+            Android.log('Meshes have originalPositions: ' + allMeshes.filter(m => m.userData.originalPositions).length);
             Android.onModelLoaded();
         }
 
@@ -465,9 +469,16 @@
         // ============================================
 
         function applyMorphs(params) {
-            Android.log('Applying morphs: ' + JSON.stringify(params));
+            Android.log('applyMorphs called with: ' + JSON.stringify(params));
+
+            const keys = Object.keys(params);
+            if (keys.length === 0) {
+                Android.log('No morph parameters to apply');
+                return;
+            }
 
             for (const [key, value] of Object.entries(params)) {
+                Android.log('Setting ' + key + ' = ' + value);
                 setMorph(key, value);
             }
 
@@ -476,7 +487,7 @@
 
         function setMorph(paramName, value) {
             if (!faceMesh) {
-                Android.error('No face mesh loaded');
+                Android.error('setMorph: No face mesh loaded');
                 return;
             }
 
@@ -484,8 +495,15 @@
             currentMorphValues[paramName] = value;
 
             // Apply to procedural mesh (vertex manipulation)
-            if (faceMesh.userData.originalPositions) {
+            if (allMeshes.length > 0 || faceMesh.userData.originalPositions) {
                 applyProceduralMorph(paramName, value);
+            } else {
+                Android.log('setMorph: No originalPositions stored for procedural morphing');
+            }
+
+            // Apply model-level transformations for immediate visual feedback
+            if (currentModel) {
+                applyModelTransform();
             }
 
             // Apply to GLTF morph targets if available
@@ -504,6 +522,27 @@
             }
 
             Android.onParameterChanged(paramName, value);
+        }
+
+        // Apply model-level scale transformations for visible effect
+        function applyModelTransform() {
+            if (!currentModel || !currentModel.userData.originalScale) {
+                if (currentModel) {
+                    currentModel.userData.originalScale = currentModel.scale.clone();
+                }
+                return;
+            }
+
+            const orig = currentModel.userData.originalScale;
+            const faceWidth = currentMorphValues['faceWidth'] || 1.0;
+            const faceLength = currentMorphValues['faceLength'] || 1.0;
+            const jawWidth = currentMorphValues['jawWidth'] || 1.0;
+
+            // Apply subtle scale changes for visible feedback
+            const scaleX = orig.x * (0.85 + faceWidth * 0.15 + (jawWidth - 1.0) * 0.1);
+            const scaleY = orig.y * (0.85 + faceLength * 0.15);
+
+            currentModel.scale.set(scaleX, scaleY, orig.z);
         }
 
         function applyProceduralMorph(paramName, value) {
@@ -581,6 +620,9 @@
             const factor = value - 1.0;
             const count = positions.length / 3;
 
+            // Stronger multipliers for more visible effects
+            const STRENGTH = 0.4;
+
             for (let i = 0; i < count; i++) {
                 const x = positions[i * 3];
                 const y = positions[i * 3 + 1];
@@ -594,69 +636,110 @@
                 // Apply transformations based on normalized coordinates
                 switch (paramName) {
                     case 'faceWidth':
-                        if (nz > -0.3) {
-                            positions[i * 3] = x + (x - bbox.centerX) * factor * 0.1;
+                        // Scale width of entire face front
+                        if (nz > -0.5) {
+                            positions[i * 3] = x + (x - bbox.centerX) * factor * STRENGTH;
                         }
                         break;
 
                     case 'faceLength':
-                        if (nz > -0.3) {
-                            positions[i * 3 + 1] = y + (y - bbox.centerY) * factor * 0.1;
+                        // Scale height of entire face
+                        if (nz > -0.5) {
+                            positions[i * 3 + 1] = y + (y - bbox.centerY) * factor * STRENGTH;
                         }
                         break;
 
                     case 'jawWidth':
-                        if (ny < -0.3 && nz > -0.3) {
-                            positions[i * 3] = x + (x - bbox.centerX) * factor * 0.15;
+                        // Lower third of face - X scaling
+                        if (ny < 0 && nz > -0.3) {
+                            const blend = Math.max(0, -ny);
+                            positions[i * 3] = x + (x - bbox.centerX) * factor * STRENGTH * blend;
+                        }
+                        break;
+
+                    case 'jawSharpness':
+                        // Chin area - Y compression
+                        if (ny < -0.3 && nz > 0) {
+                            const blend = Math.max(0, (-ny - 0.3) / 0.7);
+                            positions[i * 3 + 1] = y - (y - bbox.minY) * factor * STRENGTH * 0.5 * blend;
                         }
                         break;
 
                     case 'cheekWidth':
-                        if (ny > -0.2 && ny < 0.3 && Math.abs(nx) > 0.3 && nz > 0) {
-                            positions[i * 3] = x + (x - bbox.centerX) * factor * 0.12;
+                        // Middle sides of face
+                        if (ny > -0.4 && ny < 0.4 && Math.abs(nx) > 0.2 && nz > -0.2) {
+                            const blend = Math.abs(nx);
+                            positions[i * 3] = x + (x - bbox.centerX) * factor * STRENGTH * blend;
+                        }
+                        break;
+
+                    case 'cheekHeight':
+                        // Cheek area - Y position
+                        if (ny > -0.2 && ny < 0.4 && Math.abs(nx) > 0.3 && nz > 0) {
+                            positions[i * 3 + 1] = y + factor * bbox.sizeY * 0.05;
                         }
                         break;
 
                     case 'noseWidth':
-                        if (ny > -0.2 && ny < 0.3 && Math.abs(nx) < 0.25 && nz > 0.4) {
-                            positions[i * 3] = x + (x - bbox.centerX) * factor * 0.15;
+                        // Center of face, protruding area
+                        if (ny > -0.3 && ny < 0.3 && Math.abs(nx) < 0.3 && nz > 0.3) {
+                            positions[i * 3] = x + (x - bbox.centerX) * factor * STRENGTH * 1.5;
                         }
                         break;
 
                     case 'noseLength':
-                        if (ny > -0.3 && ny < 0.2 && Math.abs(nx) < 0.2 && nz > 0.5) {
-                            positions[i * 3 + 2] = z + (z - bbox.centerZ) * factor * 0.12;
+                        // Nose tip area - Z protrusion
+                        if (ny > -0.4 && ny < 0.2 && Math.abs(nx) < 0.25 && nz > 0.4) {
+                            positions[i * 3 + 2] = z + (z - bbox.centerZ) * factor * STRENGTH;
                         }
                         break;
 
                     case 'foreheadHeight':
-                        if (ny > 0.5) {
-                            positions[i * 3 + 1] = y + (y - bbox.centerY) * factor * 0.08;
+                        // Upper part of face
+                        if (ny > 0.3) {
+                            const blend = (ny - 0.3) / 0.7;
+                            positions[i * 3 + 1] = y + (y - bbox.centerY) * factor * STRENGTH * blend;
                         }
                         break;
 
                     case 'chinLength':
-                        if (ny < -0.5) {
-                            positions[i * 3 + 1] = y + (y - bbox.centerY) * factor * 0.12;
+                        // Chin - bottom part
+                        if (ny < -0.4) {
+                            const blend = (-ny - 0.4) / 0.6;
+                            positions[i * 3 + 1] = y + (y - bbox.centerY) * factor * STRENGTH * blend;
                         }
                         break;
 
                     case 'lipFullness':
-                        if (ny > -0.3 && ny < 0 && Math.abs(nx) < 0.25 && nz > 0.4) {
-                            positions[i * 3 + 2] = z + (z - bbox.centerZ) * factor * 0.08;
+                        // Mouth area - Z protrusion
+                        if (ny > -0.4 && ny < 0.1 && Math.abs(nx) < 0.3 && nz > 0.3) {
+                            positions[i * 3 + 2] = z + (z - bbox.centerZ) * factor * STRENGTH * 0.8;
                         }
                         break;
 
                     case 'eyeSize':
-                        if (ny > 0.2 && ny < 0.5 && Math.abs(nx) > 0.15 && nz > 0.2) {
-                            positions[i * 3] = x + (x - bbox.centerX) * factor * 0.05;
-                            positions[i * 3 + 1] = y + (y - bbox.centerY) * factor * 0.05;
+                        // Eye regions - scale around eye centers
+                        if (ny > 0.1 && ny < 0.6 && Math.abs(nx) > 0.1 && Math.abs(nx) < 0.6 && nz > 0) {
+                            const eyeCenterX = nx > 0 ? 0.35 : -0.35;
+                            const eyeCenterY = 0.35;
+                            const dx = nx - eyeCenterX;
+                            const dy = ny - eyeCenterY;
+                            positions[i * 3] = x + dx * bbox.sizeX * 0.5 * factor * STRENGTH;
+                            positions[i * 3 + 1] = y + dy * bbox.sizeY * 0.5 * factor * STRENGTH;
                         }
                         break;
 
                     case 'eyeSpacing':
-                        if (ny > 0.2 && ny < 0.5 && nz > 0.2) {
-                            positions[i * 3] = x + (x - bbox.centerX) * factor * 0.1;
+                        // Eyes - horizontal spread
+                        if (ny > 0.1 && ny < 0.6 && Math.abs(nx) > 0.1 && nz > 0) {
+                            positions[i * 3] = x + (x - bbox.centerX) * factor * STRENGTH * 0.6;
+                        }
+                        break;
+
+                    case 'eyebrowHeight':
+                        // Above eyes
+                        if (ny > 0.4 && ny < 0.7 && Math.abs(nx) > 0.1 && Math.abs(nx) < 0.6) {
+                            positions[i * 3 + 1] = y + factor * bbox.sizeY * 0.08;
                         }
                         break;
                 }
@@ -770,6 +853,16 @@
         }
 
         function animateMorphs(params, durationMs = 500) {
+            Android.log('animateMorphs called with: ' + JSON.stringify(params));
+
+            const keys = Object.keys(params);
+            if (keys.length === 0) {
+                Android.log('No morph parameters to apply');
+                return;
+            }
+
+            Android.log('Animating ' + keys.length + ' parameters: ' + keys.join(', '));
+
             const startTime = performance.now();
             const startValues = { ...currentMorphValues };
             const targetValues = { ...params };
@@ -790,6 +883,7 @@
                 if (progress < 1) {
                     requestAnimationFrame(update);
                 } else {
+                    Android.log('Morph animation complete');
                     Android.onMorphApplied();
                 }
             }
@@ -800,8 +894,27 @@
         function resetMorphs() {
             Android.log('Resetting morphs');
 
+            // Reset all morph values to default
             for (const paramName of Object.keys(MORPH_MAPPINGS)) {
-                setMorph(paramName, 1.0);
+                currentMorphValues[paramName] = 1.0;
+            }
+
+            // Reset model scale
+            if (currentModel && currentModel.userData.originalScale) {
+                currentModel.scale.copy(currentModel.userData.originalScale);
+            }
+
+            // Reset vertex positions
+            for (const mesh of allMeshes) {
+                if (mesh.userData.originalPositions) {
+                    const positions = mesh.geometry.attributes.position;
+                    const original = mesh.userData.originalPositions;
+                    for (let i = 0; i < positions.count; i++) {
+                        positions.setXYZ(i, original[i * 3], original[i * 3 + 1], original[i * 3 + 2]);
+                    }
+                    positions.needsUpdate = true;
+                    mesh.geometry.computeVertexNormals();
+                }
             }
 
             Android.onMorphApplied();
