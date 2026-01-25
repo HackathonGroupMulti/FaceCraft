@@ -27,7 +27,9 @@ import com.facemorphai.service.FaceMorphService
 import com.facemorphai.service.ModelDownloader
 import com.facemorphai.service.NexaService
 import com.facemorphai.ui.theme.FaceCraftTheme
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import java.io.File
 
 class MainActivity : ComponentActivity() {
 
@@ -121,7 +123,7 @@ class MainActivity : ComponentActivity() {
 
                                 onModelLoadError = { error ->
                                     Log.e(TAG, "3D Model load error: $error")
-                                    lifecycleScope.launch {
+                                    lifecycleScope.launch(Dispatchers.Main) {
                                         Toast.makeText(ctx, "Model load error: $error", Toast.LENGTH_SHORT).show()
                                     }
                                 }
@@ -216,8 +218,11 @@ class MainActivity : ComponentActivity() {
                                                 isModelLoading = true
                                                 nexaService.initialize(object : NexaService.InitCallback {
                                                     override fun onSuccess() {
+                                                        // Pass the manifest file path instead of just the directory
+                                                        val manifestFile = File(modelDownloader.getModelPath(), "nexa.manifest")
+
                                                         nexaService.loadModel(
-                                                            modelDownloader.getModelPath(),
+                                                            manifestFile.absolutePath,
                                                             preferNpu = true,
                                                             callback = object : NexaService.ModelLoadCallback {
                                                                 override fun onSuccess() {
@@ -226,14 +231,18 @@ class MainActivity : ComponentActivity() {
                                                                 }
                                                                 override fun onFailure(reason: String) {
                                                                     isModelLoading = false
-                                                                    Toast.makeText(context, "Load failed: $reason", Toast.LENGTH_SHORT).show()
+                                                                    lifecycleScope.launch(Dispatchers.Main) {
+                                                                        Toast.makeText(context, "Load failed: $reason", Toast.LENGTH_SHORT).show()
+                                                                    }
                                                                 }
                                                             }
                                                         )
                                                     }
                                                     override fun onFailure(reason: String) {
                                                         isModelLoading = false
-                                                        Toast.makeText(context, "SDK init failed: $reason", Toast.LENGTH_SHORT).show()
+                                                        lifecycleScope.launch(Dispatchers.Main) {
+                                                            Toast.makeText(context, "SDK init failed: $reason", Toast.LENGTH_SHORT).show()
+                                                        }
                                                     }
                                                 })
                                             },
@@ -266,7 +275,9 @@ class MainActivity : ComponentActivity() {
                                                             is ModelDownloader.DownloadState.Error -> {
                                                                 isDownloading = false
                                                                 downloadError = state.message
-                                                                Toast.makeText(context, "Download failed: ${state.message}", Toast.LENGTH_SHORT).show()
+                                                                lifecycleScope.launch(Dispatchers.Main) {
+                                                                    Toast.makeText(context, "Download failed: ${state.message}", Toast.LENGTH_SHORT).show()
+                                                                }
                                                             }
                                                         }
                                                     }
@@ -382,11 +393,13 @@ class MainActivity : ComponentActivity() {
                                         if (result.success) {
                                             webViewBridge?.animateMorphs(result.parameters)
                                         } else {
-                                            Toast.makeText(
-                                                context,
-                                                result.errorMessage ?: "Generation failed",
-                                                Toast.LENGTH_SHORT
-                                            ).show()
+                                            lifecycleScope.launch(Dispatchers.Main) {
+                                                Toast.makeText(
+                                                    context,
+                                                    result.errorMessage ?: "Generation failed",
+                                                    Toast.LENGTH_SHORT
+                                                ).show()
+                                            }
                                         }
                                     }
                                 }
