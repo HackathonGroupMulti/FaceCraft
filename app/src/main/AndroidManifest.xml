@@ -18,6 +18,13 @@
         android:usesCleartextTraffic="true"
         tools:targetApi="31">
 
+        <!-- Enable FastRPC for Qualcomm DSP access -->
+        <meta-data android:name="com.qualcomm.qti.fastrpc" android:value="1" />
+
+        <!-- Declare dependency on Qualcomm system libraries -->
+        <uses-native-library android:name="libadsprpc.so" android:required="false" />
+        <uses-native-library android:name="libcdsprpc.so" android:required="false" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"

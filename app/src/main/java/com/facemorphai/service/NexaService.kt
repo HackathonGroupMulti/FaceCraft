@@ -23,7 +23,7 @@ class NexaService(private val context: Context) {
     companion object {
         private const val TAG = "NexaService"
 
-        // Model configuration - using OmniNeural-4B for NPU
+        // Model configuration
         const val MODEL_NAME = "omni-neural"
         const val PLUGIN_ID_NPU = "npu"
         const val PLUGIN_ID_CPU = "cpu"
@@ -41,17 +41,15 @@ class NexaService(private val context: Context) {
     private var vlmWrapper: VlmWrapper? = null
     private var isInitialized = false
     private var isModelLoaded = false
-    private var currentPluginId: String = PLUGIN_ID_NPU
+    private var currentPluginId: String = PLUGIN_ID_CPU
 
-    // Coroutine scope for model operations
     private val modelScope = CoroutineScope(Dispatchers.IO)
 
-    // Model paths
     private val modelsDir: File
         get() = File(context.filesDir, "models")
 
     /**
-     * Initialize the NexaSDK. Must be called before any other operations.
+     * Initialize Nexa SDK using the license token from ModelDownloader.
      */
     fun initialize(callback: InitCallback) {
         if (isInitialized) {
@@ -59,10 +57,13 @@ class NexaService(private val context: Context) {
             return
         }
 
-        NexaSdk.getInstance().init(context, object : NexaSdk.InitCallback {
+        val licenseToken = ModelDownloader.LICENSE_TOKEN
+        
+        // Ensure we pass the license token if the SDK supports it
+        NexaSdk.getInstance().init(context, licenseToken, object : NexaSdk.InitCallback {
             override fun onSuccess() {
                 isInitialized = true
-                Log.d(TAG, "NexaSDK initialized successfully")
+                Log.d(TAG, "NexaSDK initialized successfully with license token")
                 callback.onSuccess()
             }
 
@@ -73,9 +74,6 @@ class NexaService(private val context: Context) {
         })
     }
 
-    /**
-     * Get the path where models should be stored.
-     */
     fun getModelsDirectory(): File {
         if (!modelsDir.exists()) {
             modelsDir.mkdirs()
@@ -83,20 +81,18 @@ class NexaService(private val context: Context) {
         return modelsDir
     }
 
-    /**
-     * Check if the model files exist locally.
-     */
     fun isModelDownloaded(modelName: String): Boolean {
         val modelDir = File(modelsDir, modelName)
         return modelDir.exists() && modelDir.listFiles()?.isNotEmpty() == true
     }
 
     /**
-     * Load the VLM model for face morph generation.
+     * Load the VLM model. 
+     * NOTE: preferNpu defaults to false to avoid SIGABRT on devices with locked DSPs.
      */
     fun loadModel(
         modelPath: String,
-        preferNpu: Boolean = true,
+        preferNpu: Boolean = false, 
         callback: ModelLoadCallback
     ) {
         if (!isInitialized) {
@@ -112,39 +108,49 @@ class NexaService(private val context: Context) {
         currentPluginId = if (preferNpu) PLUGIN_ID_NPU else PLUGIN_ID_CPU
 
         modelScope.launch {
-            val config = ModelConfig(
-                nCtx = 2048,
-                nThreads = 4,
-                enable_thinking = false,
-                npu_lib_folder_path = context.applicationInfo.nativeLibraryDir,
-                npu_model_folder_path = File(modelPath).parent ?: ""
-            )
-
-            VlmWrapper.builder()
-                .vlmCreateInput(
-                    VlmCreateInput(
-                        model_name = MODEL_NAME,
-                        model_path = modelPath,
-                        config = config,
-                        plugin_id = currentPluginId
-                    )
+            try {
+                val config = ModelConfig(
+                    nCtx = 2048,
+                    nThreads = 4,
+                    enable_thinking = false,
+                    npu_lib_folder_path = context.applicationInfo.nativeLibraryDir,
+                    npu_model_folder_path = File(modelPath).parent ?: ""
                 )
-                .build()
-                .onSuccess { wrapper ->
-                    vlmWrapper = wrapper
-                    isModelLoaded = true
-                    Log.d(TAG, "Model loaded successfully with plugin: $currentPluginId")
-                    callback.onSuccess()
-                }
-                .onFailure { error ->
-                    Log.e(TAG, "Model load failed with $currentPluginId: ${error.message}")
-                    if (currentPluginId == PLUGIN_ID_NPU) {
-                        Log.d(TAG, "Attempting CPU fallback...")
-                        loadModelCpuFallback(modelPath, callback)
-                    } else {
-                        callback.onFailure(error.message ?: "Unknown error loading model")
+
+                VlmWrapper.builder()
+                    .vlmCreateInput(
+                        VlmCreateInput(
+                            model_name = MODEL_NAME,
+                            model_path = modelPath,
+                            config = config,
+                            plugin_id = currentPluginId
+                        )
+                    )
+                    .build()
+                    .onSuccess { wrapper ->
+                        vlmWrapper = wrapper
+                        isModelLoaded = true
+                        Log.d(TAG, "Model loaded successfully with plugin: $currentPluginId")
+                        callback.onSuccess()
                     }
+                    .onFailure { error ->
+                        Log.e(TAG, "Model load failed with $currentPluginId: ${error.message}")
+                        if (currentPluginId == PLUGIN_ID_NPU) {
+                            Log.d(TAG, "Attempting CPU fallback...")
+                            loadModelCpuFallback(modelPath, callback)
+                        } else {
+                            callback.onFailure(error.message ?: "Unknown error loading model")
+                        }
+                    }
+            } catch (e: Exception) {
+                // This might not catch native SIGABRT, but handles JVM side errors
+                Log.e(TAG, "Exception during model load: ${e.message}")
+                if (currentPluginId == PLUGIN_ID_NPU) {
+                    loadModelCpuFallback(modelPath, callback)
+                } else {
+                    callback.onFailure(e.message ?: "Exception during load")
                 }
+            }
         }
     }
 
@@ -182,9 +188,6 @@ class NexaService(private val context: Context) {
             }
     }
 
-    /**
-     * Generate a response from the VLM.
-     */
     fun generateStream(prompt: String): Flow<StreamResult> = flow {
         val wrapper = vlmWrapper
         if (wrapper == null) {
@@ -213,9 +216,6 @@ class NexaService(private val context: Context) {
         }
     }
 
-    /**
-     * Generate a complete response (non-streaming).
-     */
     suspend fun generate(prompt: String, maxTokens: Int = 512): Result<String> {
         val builder = StringBuilder()
         var error: String? = null
@@ -235,18 +235,12 @@ class NexaService(private val context: Context) {
         }
     }
 
-    /**
-     * Stop any ongoing generation.
-     */
     fun stopGeneration() {
         modelScope.launch {
             vlmWrapper?.stopStream()
         }
     }
 
-    /**
-     * Unload the model and free resources.
-     */
     fun unloadModel() {
         modelScope.launch {
             vlmWrapper?.let {
