@@ -147,7 +147,7 @@ You may modify any parameters as needed to achieve the described look.
     private var currentParameters = MorphParameters.DEFAULT
 
     // Mock mode for demos when AI model is not available
-    private var useMockMode = true
+    private var useMockMode = false
 
     /**
      * Enable or disable mock mode (for demos without the AI model).

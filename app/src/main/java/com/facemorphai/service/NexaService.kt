@@ -13,12 +13,16 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import java.io.File
+import java.lang.ref.WeakReference
 
 /**
  * Service for managing NexaSDK initialization and VLM operations.
  * Replicates the exact loading strategy from the official Nexa SDK Demo.
  */
-class NexaService(private val context: Context) {
+class NexaService private constructor(context: Context) {
+
+    private val contextRef = WeakReference(context.applicationContext)
+    private val context: Context? get() = contextRef.get()
 
     companion object {
         private const val TAG = "NexaService"
@@ -32,7 +36,7 @@ class NexaService(private val context: Context) {
 
         fun getInstance(context: Context): NexaService {
             return instance ?: synchronized(this) {
-                instance ?: NexaService(context.applicationContext).also { instance = it }
+                instance ?: NexaService(context).also { instance = it }
             }
         }
     }
@@ -45,17 +49,17 @@ class NexaService(private val context: Context) {
     private val modelScope = CoroutineScope(Dispatchers.IO)
 
     /**
-     * Initialize Nexa SDK using the license token.
+     * Initialize Nexa SDK. 
+     * Note: License token is handled by the SDK internally or via manifest metadata in this version.
      */
     fun initialize(callback: InitCallback) {
+        val ctx = context ?: return
         if (isInitialized) {
             callback.onSuccess()
             return
         }
 
-        val licenseToken = ModelDownloader.LICENSE_TOKEN
-        
-        NexaSdk.getInstance().init(context, licenseToken, object : NexaSdk.InitCallback {
+        NexaSdk.getInstance().init(ctx, object : NexaSdk.InitCallback {
             override fun onSuccess() {
                 isInitialized = true
                 Log.d(TAG, "NexaSDK initialized successfully")
@@ -71,13 +75,13 @@ class NexaService(private val context: Context) {
 
     /**
      * Load the VLM model using the manifest path.
-     * Replicates the exact ModelConfig structure from the SDK demo.
      */
     fun loadModel(
         manifestPath: String,
-        preferNpu: Boolean = true, // Default to true as in the demo
+        preferNpu: Boolean = true,
         callback: ModelLoadCallback
     ) {
+        val ctx = context ?: return
         if (!isInitialized) {
             callback.onFailure("SDK not initialized.")
             return
@@ -93,12 +97,11 @@ class NexaService(private val context: Context) {
 
         modelScope.launch {
             try {
-                // Exact config used for NPU/CPU loading in the demo
                 val config = ModelConfig(
                     nCtx = 2048,
                     nThreads = 4,
                     enable_thinking = false,
-                    npu_lib_folder_path = context.applicationInfo.nativeLibraryDir,
+                    npu_lib_folder_path = ctx.applicationInfo.nativeLibraryDir,
                     npu_model_folder_path = modelFolder
                 )
 
@@ -120,7 +123,6 @@ class NexaService(private val context: Context) {
                     }
                     .onFailure { error ->
                         Log.e(TAG, "Model load failed ($currentPluginId): ${error.message}")
-                        // Fallback to CPU if NPU fails
                         if (currentPluginId == PLUGIN_ID_NPU) {
                             Log.d(TAG, "NPU failed, falling back to CPU...")
                             loadModelCpuFallback(manifestPath, callback)
@@ -143,6 +145,7 @@ class NexaService(private val context: Context) {
         manifestPath: String,
         callback: ModelLoadCallback
     ) {
+        val ctx = context ?: return
         currentPluginId = PLUGIN_ID_CPU
         val modelFolder = File(manifestPath).parent ?: ""
 
@@ -150,7 +153,7 @@ class NexaService(private val context: Context) {
             nCtx = 2048,
             nThreads = 4,
             enable_thinking = false,
-            npu_lib_folder_path = context.applicationInfo.nativeLibraryDir,
+            npu_lib_folder_path = ctx.applicationInfo.nativeLibraryDir,
             npu_model_folder_path = modelFolder
         )
 
