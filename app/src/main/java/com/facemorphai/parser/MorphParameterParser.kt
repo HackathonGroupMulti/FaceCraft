@@ -9,17 +9,14 @@ import kotlinx.serialization.json.jsonPrimitive
 
 /**
  * Parses LLM JSON output into MorphParameters.
- * Handles various edge cases and malformed output.
+ * Handles various edge cases and malformed output common in small local VLMs.
  */
 class MorphParameterParser {
 
     companion object {
         private const val TAG = "MorphParameterParser"
 
-        // Regex to extract JSON from potentially noisy LLM output
-        private val JSON_REGEX = Regex("""\{[^{}]*\}""")
-
-        // Valid parameter names
+        // Valid parameter names for validation
         private val VALID_PARAMS = setOf(
             "eyeSize", "eyeSharpness", "eyeAngle", "eyeSpacing", "eyeDepth",
             "eyebrowHeight", "eyebrowAngle", "eyebrowThickness",
@@ -41,96 +38,58 @@ class MorphParameterParser {
 
     /**
      * Parse LLM output into MorphParameters.
-     * Handles various formats and edge cases.
      */
     fun parse(llmOutput: String): Result<MorphParameters> {
-        Log.d(TAG, "Parsing: $llmOutput")
+        // CRITICAL: Log the exact output to help debugging
+        Log.d(TAG, "RAW AI OUTPUT: \"$llmOutput\"")
 
-        // Clean up the output
-        val cleaned = cleanOutput(llmOutput)
+        // 1. Try to find the JSON object boundaries
+        val firstBrace = llmOutput.indexOf('{')
+        val lastBrace = llmOutput.lastIndexOf('}')
 
-        // Try to extract JSON
-        val jsonString = extractJson(cleaned)
-            ?: return Result.failure(Exception("No valid JSON found in output"))
+        if (firstBrace == -1 || lastBrace == -1 || lastBrace <= firstBrace) {
+            Log.e(TAG, "No valid JSON boundaries found in: $llmOutput")
+            return Result.failure(Exception("No valid JSON object found in AI response"))
+        }
+
+        val jsonString = llmOutput.substring(firstBrace, lastBrace + 1)
+        Log.d(TAG, "Extracted JSON string: $jsonString")
 
         return try {
             val jsonObject = json.parseToJsonElement(jsonString) as? JsonObject
-                ?: return Result.failure(Exception("Output is not a JSON object"))
+                ?: return Result.failure(Exception("Extracted text is not a valid JSON object"))
 
             val params = parseJsonObject(jsonObject)
             Result.success(params)
         } catch (e: Exception) {
-            Log.e(TAG, "Parse error", e)
+            Log.e(TAG, "JSON parsing failed for: $jsonString", e)
             Result.failure(Exception("Failed to parse JSON: ${e.message}"))
         }
     }
 
-    /**
-     * Clean up LLM output by removing common artifacts.
-     */
-    private fun cleanOutput(output: String): String {
-        return output
-            // Remove markdown code blocks
-            .replace(Regex("```json\\s*"), "")
-            .replace(Regex("```\\s*"), "")
-            // Remove leading/trailing whitespace
-            .trim()
-            // Remove common LLM preambles
-            .replace(Regex("^(Here is|Here's|The|Output:).*?(?=\\{)", RegexOption.IGNORE_CASE), "")
-            // Remove trailing explanations
-            .replace(Regex("\\}\\s*[A-Za-z].*$", RegexOption.DOT_MATCHES_ALL), "}")
-    }
-
-    /**
-     * Extract the first valid JSON object from the text.
-     */
-    private fun extractJson(text: String): String? {
-        // First, try to parse the whole text as JSON
-        if (text.startsWith("{") && text.endsWith("}")) {
-            return text
-        }
-
-        // Otherwise, find JSON in the text
-        return JSON_REGEX.find(text)?.value
-    }
-
-    /**
-     * Parse a JsonObject into MorphParameters.
-     */
     private fun parseJsonObject(jsonObject: JsonObject): MorphParameters {
         val values = mutableMapOf<String, Float>()
 
         for ((key, element) in jsonObject) {
-            // Normalize key (handle camelCase variations)
             val normalizedKey = normalizeKey(key)
 
             if (normalizedKey in VALID_PARAMS) {
                 try {
                     val value = element.jsonPrimitive.float
-                    // Clamp to valid range
                     values[normalizedKey] = value.coerceIn(0.0f, 2.0f)
                 } catch (e: Exception) {
                     Log.w(TAG, "Skipping invalid value for $key: ${element}")
                 }
             } else {
-                Log.w(TAG, "Ignoring unknown parameter: $key")
+                Log.w(TAG, "Ignoring unknown parameter from AI: $key")
             }
         }
 
         return fromMap(values)
     }
 
-    /**
-     * Normalize parameter key names to handle variations.
-     */
     private fun normalizeKey(key: String): String {
-        // Handle common variations
-        val normalized = key
-            .replace("_", "")
-            .replace("-", "")
-            .lowercase()
-
-        // Map to correct camelCase
+        val normalized = key.replace("_", "").replace("-", "").lowercase()
         return when (normalized) {
             "eyesize" -> "eyeSize"
             "eyesharpness" -> "eyeSharpness"
@@ -168,9 +127,6 @@ class MorphParameterParser {
         }
     }
 
-    /**
-     * Create MorphParameters from a map of values.
-     */
     fun fromMap(values: Map<String, Float>): MorphParameters {
         return MorphParameters(
             eyeSize = values["eyeSize"] ?: 1.0f,
@@ -208,32 +164,12 @@ class MorphParameterParser {
         )
     }
 
-    /**
-     * Convert MorphParameters to JSON string for Three.js.
-     */
     fun toJson(params: MorphParameters): String {
         val nonDefault = params.getNonDefaultParameters()
-        if (nonDefault.isEmpty()) {
-            return "{}"
-        }
-
+        if (nonDefault.isEmpty()) return "{}"
         return buildString {
             append("{")
             nonDefault.entries.forEachIndexed { index, (key, value) ->
-                if (index > 0) append(",")
-                append("\"$key\":$value")
-            }
-            append("}")
-        }
-    }
-
-    /**
-     * Convert MorphParameters to full JSON string (including defaults).
-     */
-    fun toFullJson(params: MorphParameters): String {
-        return buildString {
-            append("{")
-            params.toMap().entries.forEachIndexed { index, (key, value) ->
                 if (index > 0) append(",")
                 append("\"$key\":$value")
             }
