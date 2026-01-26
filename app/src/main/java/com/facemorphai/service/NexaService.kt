@@ -16,14 +16,13 @@ import java.io.File
 
 /**
  * Service for managing NexaSDK initialization and VLM operations.
- * Handles model loading, inference, and cleanup.
+ * Replicates the exact loading strategy from the official Nexa SDK Demo.
  */
 class NexaService(private val context: Context) {
 
     companion object {
         private const val TAG = "NexaService"
 
-        // Model configuration
         const val MODEL_NAME = "omni-neural"
         const val PLUGIN_ID_NPU = "npu"
         const val PLUGIN_ID_CPU = "cpu"
@@ -45,11 +44,8 @@ class NexaService(private val context: Context) {
 
     private val modelScope = CoroutineScope(Dispatchers.IO)
 
-    private val modelsDir: File
-        get() = File(context.filesDir, "models")
-
     /**
-     * Initialize Nexa SDK using the license token from ModelDownloader.
+     * Initialize Nexa SDK using the license token.
      */
     fun initialize(callback: InitCallback) {
         if (isInitialized) {
@@ -59,11 +55,10 @@ class NexaService(private val context: Context) {
 
         val licenseToken = ModelDownloader.LICENSE_TOKEN
         
-        // Ensure we pass the license token if the SDK supports it
         NexaSdk.getInstance().init(context, licenseToken, object : NexaSdk.InitCallback {
             override fun onSuccess() {
                 isInitialized = true
-                Log.d(TAG, "NexaSDK initialized successfully with license token")
+                Log.d(TAG, "NexaSDK initialized successfully")
                 callback.onSuccess()
             }
 
@@ -74,29 +69,17 @@ class NexaService(private val context: Context) {
         })
     }
 
-    fun getModelsDirectory(): File {
-        if (!modelsDir.exists()) {
-            modelsDir.mkdirs()
-        }
-        return modelsDir
-    }
-
-    fun isModelDownloaded(modelName: String): Boolean {
-        val modelDir = File(modelsDir, modelName)
-        return modelDir.exists() && modelDir.listFiles()?.isNotEmpty() == true
-    }
-
     /**
-     * Load the VLM model. 
-     * NOTE: preferNpu defaults to false to avoid SIGABRT on devices with locked DSPs.
+     * Load the VLM model using the manifest path.
+     * Replicates the exact ModelConfig structure from the SDK demo.
      */
     fun loadModel(
-        modelPath: String,
-        preferNpu: Boolean = false, 
+        manifestPath: String,
+        preferNpu: Boolean = true, // Default to true as in the demo
         callback: ModelLoadCallback
     ) {
         if (!isInitialized) {
-            callback.onFailure("SDK not initialized. Call initialize() first.")
+            callback.onFailure("SDK not initialized.")
             return
         }
 
@@ -106,22 +89,24 @@ class NexaService(private val context: Context) {
         }
 
         currentPluginId = if (preferNpu) PLUGIN_ID_NPU else PLUGIN_ID_CPU
+        val modelFolder = File(manifestPath).parent ?: ""
 
         modelScope.launch {
             try {
+                // Exact config used for NPU/CPU loading in the demo
                 val config = ModelConfig(
                     nCtx = 2048,
                     nThreads = 4,
                     enable_thinking = false,
                     npu_lib_folder_path = context.applicationInfo.nativeLibraryDir,
-                    npu_model_folder_path = File(modelPath).parent ?: ""
+                    npu_model_folder_path = modelFolder
                 )
 
                 VlmWrapper.builder()
                     .vlmCreateInput(
                         VlmCreateInput(
                             model_name = MODEL_NAME,
-                            model_path = modelPath,
+                            model_path = manifestPath,
                             config = config,
                             plugin_id = currentPluginId
                         )
@@ -130,47 +115,50 @@ class NexaService(private val context: Context) {
                     .onSuccess { wrapper ->
                         vlmWrapper = wrapper
                         isModelLoaded = true
-                        Log.d(TAG, "Model loaded successfully with plugin: $currentPluginId")
+                        Log.d(TAG, "Model loaded successfully with: $currentPluginId")
                         callback.onSuccess()
                     }
                     .onFailure { error ->
-                        Log.e(TAG, "Model load failed with $currentPluginId: ${error.message}")
+                        Log.e(TAG, "Model load failed ($currentPluginId): ${error.message}")
+                        // Fallback to CPU if NPU fails
                         if (currentPluginId == PLUGIN_ID_NPU) {
-                            Log.d(TAG, "Attempting CPU fallback...")
-                            loadModelCpuFallback(modelPath, callback)
+                            Log.d(TAG, "NPU failed, falling back to CPU...")
+                            loadModelCpuFallback(manifestPath, callback)
                         } else {
-                            callback.onFailure(error.message ?: "Unknown error loading model")
+                            callback.onFailure(error.message ?: "Load failed")
                         }
                     }
             } catch (e: Exception) {
-                // This might not catch native SIGABRT, but handles JVM side errors
-                Log.e(TAG, "Exception during model load: ${e.message}")
+                Log.e(TAG, "Exception during load: ${e.message}")
                 if (currentPluginId == PLUGIN_ID_NPU) {
-                    loadModelCpuFallback(modelPath, callback)
+                    loadModelCpuFallback(manifestPath, callback)
                 } else {
-                    callback.onFailure(e.message ?: "Exception during load")
+                    callback.onFailure(e.message ?: "Load error")
                 }
             }
         }
     }
 
     private suspend fun loadModelCpuFallback(
-        modelPath: String,
+        manifestPath: String,
         callback: ModelLoadCallback
     ) {
         currentPluginId = PLUGIN_ID_CPU
+        val modelFolder = File(manifestPath).parent ?: ""
 
         val config = ModelConfig(
             nCtx = 2048,
             nThreads = 4,
-            enable_thinking = false
+            enable_thinking = false,
+            npu_lib_folder_path = context.applicationInfo.nativeLibraryDir,
+            npu_model_folder_path = modelFolder
         )
 
         VlmWrapper.builder()
             .vlmCreateInput(
                 VlmCreateInput(
                     model_name = MODEL_NAME,
-                    model_path = modelPath,
+                    model_path = manifestPath,
                     config = config,
                     plugin_id = PLUGIN_ID_CPU
                 )
@@ -179,12 +167,10 @@ class NexaService(private val context: Context) {
             .onSuccess { wrapper ->
                 vlmWrapper = wrapper
                 isModelLoaded = true
-                Log.d(TAG, "Model loaded with CPU fallback")
                 callback.onSuccess()
             }
             .onFailure { error ->
-                Log.e(TAG, "Model load failed with CPU: ${error.message}")
-                callback.onFailure(error.message ?: "Unknown error")
+                callback.onFailure(error.message ?: "CPU load failed")
             }
     }
 
