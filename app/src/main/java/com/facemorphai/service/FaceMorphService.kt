@@ -24,27 +24,14 @@ class FaceMorphService(private val context: Context) {
          * Strength increased to ensure JSON-only output.
          */
         private val SYSTEM_PROMPT = """
-You are a highly precise 3D face morphing engine. 
-Input: A natural language description of a facial change.
-Output: A SINGLE JSON object containing ONLY the parameters to modify.
+Output ONLY a JSON object. No markdown, no text, no explanation.
+Values: 0.0-2.0 (1.0=neutral, >1.0=bigger, <1.0=smaller).
 
-CRITICAL CONSTRAINTS:
-- DO NOT use markdown code blocks (no ```json).
-- DO NOT provide any introductory or concluding text.
-- ONLY output the JSON object.
-- Values must be between 0.0 and 2.0 (1.0 is neutral).
-- Be subtle: changes between 0.85 and 1.15 are best.
+Parameters: eyeSize, eyeSpacing, eyeDepth, eyebrowHeight, noseWidth, noseLength, noseTip, jawWidth, jawSharpness, chinLength, chinWidth, chinProtrusion, cheekHeight, cheekWidth, lipFullness, lipWidth, mouthSize, foreheadHeight, faceWidth, faceLength
 
-AVAILABLE PARAMETERS:
-Eyes: eyeSize, eyeSharpness, eyeAngle, eyeSpacing, eyeDepth, eyebrowHeight, eyebrowAngle, eyebrowThickness
-Nose: noseWidth, noseLength, noseBridge, noseTip, nostrilSize
-Jaw/Chin: jawWidth, jawSharpness, chinLength, chinWidth, chinProtrusion
-Cheeks: cheekHeight, cheekWidth, cheekDepth
-Mouth/Lips: lipFullness, lipWidth, mouthSize, mouthCorner, upperLipHeight, lowerLipHeight
-Forehead: foreheadHeight, foreheadWidth, foreheadSlope
-Face Shape: faceWidth, faceLength
+Example input: "make eyes bigger and nose thinner"
+Example output: {"eyeSize":1.3,"noseWidth":0.8}
 
-User Request: 
 """.trimIndent()
 
         /**
@@ -152,10 +139,70 @@ User Request:
     fun resetParameters() { currentParameters = MorphParameters.DEFAULT }
 
     private fun generateMockMorph(request: MorphRequest, startTime: Long): MorphResult {
-        // Simple fallback if model is not loaded
+        val prompt = request.prompt.lowercase()
         val params = mutableMapOf<String, Float>()
-        if (request.prompt.contains("big", true)) params["eyeSize"] = 1.3f
-        if (request.prompt.contains("thin", true)) params["faceWidth"] = 0.85f
+
+        // Keyword-based parameter mapping
+        if (prompt.contains("big") || prompt.contains("larger") || prompt.contains("wider")) {
+            when (request.region) {
+                FaceRegion.EYES -> params["eyeSize"] = 1.35f
+                FaceRegion.NOSE -> params["noseWidth"] = 1.3f
+                FaceRegion.MOUTH_LIPS -> { params["lipFullness"] = 1.3f; params["mouthSize"] = 1.2f }
+                FaceRegion.JAW_CHIN -> { params["jawWidth"] = 1.3f; params["chinWidth"] = 1.2f }
+                FaceRegion.CHEEKS -> params["cheekWidth"] = 1.3f
+                FaceRegion.FOREHEAD -> params["foreheadHeight"] = 1.3f
+                else -> params["faceWidth"] = 1.2f
+            }
+        }
+        if (prompt.contains("small") || prompt.contains("thin") || prompt.contains("narrow")) {
+            when (request.region) {
+                FaceRegion.EYES -> params["eyeSize"] = 0.75f
+                FaceRegion.NOSE -> params["noseWidth"] = 0.75f
+                FaceRegion.MOUTH_LIPS -> params["lipFullness"] = 0.75f
+                FaceRegion.JAW_CHIN -> { params["jawWidth"] = 0.75f; params["jawSharpness"] = 1.3f }
+                else -> params["faceWidth"] = 0.85f
+            }
+        }
+        if (prompt.contains("long") || prompt.contains("longer")) {
+            when (request.region) {
+                FaceRegion.NOSE -> params["noseLength"] = 1.35f
+                FaceRegion.JAW_CHIN -> { params["chinLength"] = 1.35f; params["chinProtrusion"] = 1.2f }
+                FaceRegion.FOREHEAD -> params["foreheadHeight"] = 1.35f
+                else -> params["faceLength"] = 1.25f
+            }
+        }
+        if (prompt.contains("short") || prompt.contains("shorter")) {
+            when (request.region) {
+                FaceRegion.NOSE -> params["noseLength"] = 0.7f
+                FaceRegion.JAW_CHIN -> params["chinLength"] = 0.7f
+                FaceRegion.FOREHEAD -> params["foreheadHeight"] = 0.7f
+                else -> params["faceLength"] = 0.8f
+            }
+        }
+        if (prompt.contains("sharp") || prompt.contains("angular")) {
+            params["jawSharpness"] = 1.4f; params["cheekHeight"] = 1.2f
+        }
+        if (prompt.contains("round") || prompt.contains("soft")) {
+            params["jawSharpness"] = 0.7f; params["cheekWidth"] = 1.2f
+        }
+        if (prompt.contains("full") || prompt.contains("plump")) {
+            params["lipFullness"] = 1.4f; params["cheekWidth"] = 1.15f
+        }
+
+        // If no keywords matched, apply a default change for the selected region
+        if (params.isEmpty()) {
+            Log.d(TAG, "Mock: no keywords matched, applying default for region ${request.region}")
+            when (request.region) {
+                FaceRegion.EYES -> params["eyeSize"] = 1.15f
+                FaceRegion.NOSE -> params["noseWidth"] = 1.1f
+                FaceRegion.JAW_CHIN -> params["jawWidth"] = 1.1f
+                FaceRegion.CHEEKS -> params["cheekWidth"] = 1.1f
+                FaceRegion.MOUTH_LIPS -> params["lipFullness"] = 1.15f
+                FaceRegion.FOREHEAD -> params["foreheadHeight"] = 1.1f
+                FaceRegion.FACE_SHAPE -> params["faceWidth"] = 1.1f
+                FaceRegion.ALL -> params["faceWidth"] = 1.1f
+            }
+        }
 
         val newParams = parser.fromMap(params)
         currentParameters = currentParameters.mergeWith(newParams)

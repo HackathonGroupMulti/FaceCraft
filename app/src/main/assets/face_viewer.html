@@ -74,7 +74,8 @@
     <!-- Three.js from CDN -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/fflate@0.6.9/umd/index.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/FBXLoader.js"></script>
 
     <script>
         // ============================================
@@ -83,10 +84,10 @@
         // ============================================
         //
         // 3D Model Credits:
-        // "Face" (https://skfb.ly/oKyPu) by hannibalhero8
+        // "Lisa - Woman Head with BlendShapes" (https://skfb.ly/o69ns) by skullvez
         // Licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
         //
-        // "Woman Face" (https://skfb.ly/pr8CK) by Rena
+        // "Ally Pretty Beautiful Face Head Model With Hair" (https://skfb.ly/oC7Jx) by skullvez
         // Licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
         // ============================================
 
@@ -114,53 +115,92 @@
         // Default morph parameter values
         const DEFAULT_MORPH_VALUE = 1.0;
 
-        // Morph parameter definitions with their morph target mappings
-        const MORPH_MAPPINGS = {
-            // Eyes
-            eyeSize: { targets: ['eyeSize', 'eye_size'], default: 1.0 },
-            eyeSharpness: { targets: ['eyeSharpness', 'eye_sharpness'], default: 1.0 },
-            eyeAngle: { targets: ['eyeAngle', 'eye_angle'], default: 1.0 },
-            eyeSpacing: { targets: ['eyeSpacing', 'eye_spacing'], default: 1.0 },
-            eyeDepth: { targets: ['eyeDepth', 'eye_depth'], default: 1.0 },
-            eyebrowHeight: { targets: ['eyebrowHeight', 'eyebrow_height', 'browHeight'], default: 1.0 },
-            eyebrowAngle: { targets: ['eyebrowAngle', 'eyebrow_angle', 'browAngle'], default: 1.0 },
-            eyebrowThickness: { targets: ['eyebrowThickness', 'eyebrow_thickness'], default: 1.0 },
+        // All parameter names (for reset and tracking)
+        const ALL_PARAMS = [
+            'eyeSize', 'eyeSharpness', 'eyeAngle', 'eyeSpacing', 'eyeDepth',
+            'eyebrowHeight', 'eyebrowAngle', 'eyebrowThickness',
+            'noseWidth', 'noseLength', 'noseBridge', 'noseTip', 'nostrilSize',
+            'jawWidth', 'jawSharpness', 'chinLength', 'chinWidth', 'chinProtrusion',
+            'cheekHeight', 'cheekWidth', 'cheekDepth',
+            'lipFullness', 'lipWidth', 'mouthSize', 'mouthCorner',
+            'upperLipHeight', 'lowerLipHeight',
+            'foreheadHeight', 'foreheadWidth', 'foreheadSlope',
+            'faceWidth', 'faceLength'
+        ];
 
-            // Nose
-            noseWidth: { targets: ['noseWidth', 'nose_width'], default: 1.0 },
-            noseLength: { targets: ['noseLength', 'nose_length'], default: 1.0 },
-            noseBridge: { targets: ['noseBridge', 'nose_bridge'], default: 1.0 },
-            noseTip: { targets: ['noseTip', 'nose_tip'], default: 1.0 },
-            nostrilSize: { targets: ['nostrilSize', 'nostril_size'], default: 1.0 },
-
-            // Jaw & Chin
-            jawWidth: { targets: ['jawWidth', 'jaw_width'], default: 1.0 },
-            jawSharpness: { targets: ['jawSharpness', 'jaw_sharpness'], default: 1.0 },
-            chinLength: { targets: ['chinLength', 'chin_length'], default: 1.0 },
-            chinWidth: { targets: ['chinWidth', 'chin_width'], default: 1.0 },
-            chinProtrusion: { targets: ['chinProtrusion', 'chin_protrusion'], default: 1.0 },
-
-            // Cheeks
-            cheekHeight: { targets: ['cheekHeight', 'cheek_height'], default: 1.0 },
-            cheekWidth: { targets: ['cheekWidth', 'cheek_width'], default: 1.0 },
-            cheekDepth: { targets: ['cheekDepth', 'cheek_depth'], default: 1.0 },
-
-            // Mouth & Lips
-            lipFullness: { targets: ['lipFullness', 'lip_fullness'], default: 1.0 },
-            lipWidth: { targets: ['lipWidth', 'lip_width'], default: 1.0 },
-            mouthSize: { targets: ['mouthSize', 'mouth_size'], default: 1.0 },
-            mouthCorner: { targets: ['mouthCorner', 'mouth_corner', 'smile'], default: 1.0 },
-            upperLipHeight: { targets: ['upperLipHeight', 'upper_lip_height'], default: 1.0 },
-            lowerLipHeight: { targets: ['lowerLipHeight', 'lower_lip_height'], default: 1.0 },
-
-            // Forehead
-            foreheadHeight: { targets: ['foreheadHeight', 'forehead_height'], default: 1.0 },
-            foreheadWidth: { targets: ['foreheadWidth', 'forehead_width'], default: 1.0 },
-            foreheadSlope: { targets: ['foreheadSlope', 'forehead_slope'], default: 1.0 },
-
-            // Face Shape
-            faceWidth: { targets: ['faceWidth', 'face_width'], default: 1.0 },
-            faceLength: { targets: ['faceLength', 'face_length'], default: 1.0 }
+        // Map our semantic parameters to ARKit blend shapes in the FBX models.
+        // 'positive' shapes activate when param > 1.0 (bigger/more)
+        // 'negative' shapes activate when param < 1.0 (smaller/less)
+        // Influence = |param - 1.0|, clamped to 0-1
+        const BLEND_SHAPE_MAP = {
+            eyeSize: {
+                positive: ['EyeOpen_L', 'EyeOpen_R'],
+                negative: ['EyeSquint_L', 'EyeSquint_R']
+            },
+            eyeSharpness: {
+                positive: ['EyeSquint_L', 'EyeSquint_R'],
+                negative: ['EyeOpen_L', 'EyeOpen_R']
+            },
+            eyebrowHeight: {
+                positive: ['BrowsU_L', 'BrowsU_R', 'BrowsU_C'],
+                negative: ['BrowsD_L', 'BrowsD_R']
+            },
+            eyebrowAngle: {
+                positive: ['BrowsU_C'],
+                negative: ['BrowsD_L', 'BrowsD_R']
+            },
+            jawWidth: {
+                positive: ['JawOpen'],
+                negative: []
+            },
+            jawSharpness: {
+                positive: ['JawFwd'],
+                negative: []
+            },
+            chinLength: {
+                positive: ['ChinLowerRaise'],
+                negative: ['ChinUpperRaise']
+            },
+            chinProtrusion: {
+                positive: ['JawFwd'],
+                negative: []
+            },
+            cheekWidth: {
+                positive: ['Puff'],
+                negative: ['CheekSquint_L', 'CheekSquint_R']
+            },
+            cheekHeight: {
+                positive: ['CheekSquint_L', 'CheekSquint_R'],
+                negative: []
+            },
+            lipFullness: {
+                positive: ['LipsFunnel', 'LipsUpperUp'],
+                negative: ['LipsUpperClose', 'LipsLowerClose']
+            },
+            lipWidth: {
+                positive: ['LipsStretch_L', 'LipsStretch_R'],
+                negative: ['LipsPucker']
+            },
+            mouthSize: {
+                positive: ['JawOpen', 'LipsLowerDown'],
+                negative: ['LipsLowerClose', 'LipsUpperClose']
+            },
+            mouthCorner: {
+                positive: ['MouthSmile_L', 'MouthSmile_R'],
+                negative: ['MouthFrown_L', 'MouthFrown_R']
+            },
+            upperLipHeight: {
+                positive: ['LipsUpperUp', 'LipsUpperOpen'],
+                negative: ['LipsUpperClose']
+            },
+            lowerLipHeight: {
+                positive: ['LipsLowerDown', 'LipsLowerOpen'],
+                negative: ['LipsLowerClose']
+            },
+            noseWidth: {
+                positive: ['Sneer'],
+                negative: []
+            }
         };
 
         // Initialize the 3D scene
@@ -259,25 +299,24 @@
             Android.log('Current location: ' + window.location.href);
             showLoading(true);
 
-            // Check if THREE and GLTFLoader are available
             if (typeof THREE === 'undefined') {
                 Android.error('THREE.js not loaded - check internet connection');
                 showError('3D library not loaded');
                 return;
             }
-            if (typeof THREE.GLTFLoader === 'undefined') {
-                Android.error('GLTFLoader not available');
-                showError('GLTF loader not loaded');
+            if (typeof THREE.FBXLoader === 'undefined') {
+                Android.error('FBXLoader not available');
+                showError('FBX loader not loaded');
                 return;
             }
 
-            const loader = new THREE.GLTFLoader();
+            const loader = new THREE.FBXLoader();
 
             loader.load(
                 path,
-                (gltf) => {
-                    Android.log('GLTF loaded successfully');
-                    onModelLoaded(gltf);
+                (fbxGroup) => {
+                    Android.log('FBX loaded successfully');
+                    onModelLoaded(fbxGroup);
                 },
                 (progress) => {
                     if (progress.total > 0) {
@@ -296,7 +335,6 @@
                     }
                     Android.error('Model load error: ' + errorMsg);
                     Android.error('Failed path: ' + path);
-                    Android.error('Full URL attempted: ' + new URL(path, window.location.href).href);
                     showError('Failed to load model: ' + errorMsg);
                     Android.onModelLoadError(errorMsg);
                 }
@@ -308,13 +346,10 @@
             showLoading(true);
 
             // Map template IDs to model paths (use relative paths from HTML location)
-            // Note: woman_face uses standard PBR materials (more compatible)
-            // face model requires KHR_materials_pbrSpecularGlossiness extension
             const modelPaths = {
-                'male': 'models/face/scene.gltf',
-                'female': 'models/woman_face/scene.gltf',
-                'stylized': 'models/woman_face/scene.gltf',
-                'default': 'models/woman_face/scene.gltf'  // woman_face is more compatible
+                'ally': 'models/ally/scene.fbx',
+                'lisa': 'models/lisa/scene.fbx',
+                'default': 'models/lisa/scene.fbx'
             };
 
             const path = modelPaths[templateId] || modelPaths['default'];
@@ -400,7 +435,7 @@
             Android.onModelLoaded();
         }
 
-        function onModelLoaded(gltf) {
+        function onModelLoaded(model) {
             // Remove existing model
             if (currentModel) {
                 scene.remove(currentModel);
@@ -408,8 +443,7 @@
             }
             faceMesh = null;
             allMeshes = [];
-
-            const model = gltf.scene;
+            morphTargets = {};
 
             // Collect all meshes and store original positions for morphing
             model.traverse((child) => {
@@ -426,10 +460,10 @@
                         faceMesh = child;
                     }
 
-                    // Check for morph targets
+                    // Check for morph targets (blend shapes from FBX)
                     if (child.morphTargetDictionary) {
-                        morphTargets = child.morphTargetDictionary;
-                        Android.log('Found morph targets: ' + Object.keys(morphTargets).join(', '));
+                        morphTargets = { ...morphTargets, ...child.morphTargetDictionary };
+                        Android.log('Found morph targets on "' + child.name + '": ' + Object.keys(child.morphTargetDictionary).join(', '));
                     }
                 }
             });
@@ -494,30 +528,46 @@
             // Store the value
             currentMorphValues[paramName] = value;
 
-            // Apply to procedural mesh (vertex manipulation)
-            if (allMeshes.length > 0 || faceMesh.userData.originalPositions) {
-                applyProceduralMorph(paramName, value);
-            } else {
-                Android.log('setMorph: No originalPositions stored for procedural morphing');
-            }
+            const blendMapping = BLEND_SHAPE_MAP[paramName];
+            let blendShapeApplied = false;
 
-            // Apply model-level transformations for immediate visual feedback
-            if (currentModel) {
-                applyModelTransform();
-            }
+            // Primary: Apply ARKit blend shapes if available
+            if (blendMapping) {
+                const factor = value - 1.0; // -1 to +1
+                const positiveInfluence = Math.max(0, Math.min(1, factor));
+                const negativeInfluence = Math.max(0, Math.min(1, -factor));
 
-            // Apply to GLTF morph targets if available
-            if (faceMesh.morphTargetDictionary && faceMesh.morphTargetInfluences) {
-                const mapping = MORPH_MAPPINGS[paramName];
-                if (mapping) {
-                    for (const targetName of mapping.targets) {
-                        const index = faceMesh.morphTargetDictionary[targetName];
-                        if (index !== undefined) {
-                            // Convert our 0-2 range to 0-1 range
-                            const influence = (value - 1.0);
-                            faceMesh.morphTargetInfluences[index] = Math.max(0, Math.min(1, influence));
+                // Apply to all meshes that have morph targets
+                for (const mesh of allMeshes) {
+                    if (!mesh.morphTargetDictionary || !mesh.morphTargetInfluences) continue;
+
+                    // Activate positive blend shapes (param > 1.0)
+                    for (const shapeName of blendMapping.positive) {
+                        const idx = mesh.morphTargetDictionary[shapeName];
+                        if (idx !== undefined) {
+                            mesh.morphTargetInfluences[idx] = positiveInfluence;
+                            blendShapeApplied = true;
                         }
                     }
+
+                    // Activate negative blend shapes (param < 1.0)
+                    for (const shapeName of blendMapping.negative) {
+                        const idx = mesh.morphTargetDictionary[shapeName];
+                        if (idx !== undefined) {
+                            mesh.morphTargetInfluences[idx] = negativeInfluence;
+                            blendShapeApplied = true;
+                        }
+                    }
+                }
+            }
+
+            // Fallback: procedural vertex morphing for params without blend shapes
+            if (!blendShapeApplied) {
+                if (allMeshes.length > 0 || faceMesh.userData.originalPositions) {
+                    applyProceduralMorph(paramName, value);
+                }
+                if (currentModel) {
+                    applyModelTransform();
                 }
             }
 
@@ -895,8 +945,17 @@
             Android.log('Resetting morphs');
 
             // Reset all morph values to default
-            for (const paramName of Object.keys(MORPH_MAPPINGS)) {
+            for (const paramName of ALL_PARAMS) {
                 currentMorphValues[paramName] = 1.0;
+            }
+
+            // Reset all blend shape influences to 0
+            for (const mesh of allMeshes) {
+                if (mesh.morphTargetInfluences) {
+                    for (let i = 0; i < mesh.morphTargetInfluences.length; i++) {
+                        mesh.morphTargetInfluences[i] = 0;
+                    }
+                }
             }
 
             // Reset model scale
@@ -922,7 +981,7 @@
 
         function resetMorphValues() {
             currentMorphValues = {};
-            for (const paramName of Object.keys(MORPH_MAPPINGS)) {
+            for (const paramName of ALL_PARAMS) {
                 currentMorphValues[paramName] = 1.0;
             }
         }

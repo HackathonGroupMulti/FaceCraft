@@ -40,7 +40,6 @@ class MorphParameterParser {
      * Parse LLM output into MorphParameters.
      */
     fun parse(llmOutput: String): Result<MorphParameters> {
-        // CRITICAL: Log the exact output to help debugging
         Log.d(TAG, "RAW AI OUTPUT: \"$llmOutput\"")
 
         // 1. Try to find the JSON object boundaries
@@ -48,43 +47,44 @@ class MorphParameterParser {
         val lastBrace = llmOutput.lastIndexOf('}')
 
         if (firstBrace == -1 || lastBrace == -1 || lastBrace <= firstBrace) {
-            Log.e(TAG, "No valid JSON boundaries found in: $llmOutput")
+            Log.e(TAG, "No valid JSON boundaries found")
             return Result.failure(Exception("No valid JSON object found in AI response"))
         }
 
-        val jsonString = llmOutput.substring(firstBrace, lastBrace + 1)
-        Log.d(TAG, "Extracted JSON string: $jsonString")
+        val rawJson = llmOutput.substring(firstBrace, lastBrace + 1)
 
+        // 2. Repair and Parse
         return try {
+            val jsonString = repairJson(rawJson)
             val jsonObject = json.parseToJsonElement(jsonString) as? JsonObject
                 ?: return Result.failure(Exception("Extracted text is not a valid JSON object"))
 
             val params = parseJsonObject(jsonObject)
             Result.success(params)
         } catch (e: Exception) {
-            Log.e(TAG, "JSON parsing failed for: $jsonString", e)
-            Result.failure(Exception("Failed to parse JSON: ${e.message}"))
+            Log.e(TAG, "JSON parsing failed, trying fallback extraction", e)
+            val fallbackParams = extractKeyValuesManually(rawJson)
+            if (fallbackParams.isNotEmpty()) {
+                Result.success(fromMap(fallbackParams))
+            } else {
+                Result.failure(Exception("Failed to parse JSON: ${e.message}"))
+            }
         }
     }
 
     private fun parseJsonObject(jsonObject: JsonObject): MorphParameters {
         val values = mutableMapOf<String, Float>()
-
         for ((key, element) in jsonObject) {
             val normalizedKey = normalizeKey(key)
-
             if (normalizedKey in VALID_PARAMS) {
                 try {
                     val value = element.jsonPrimitive.float
                     values[normalizedKey] = value.coerceIn(0.0f, 2.0f)
                 } catch (e: Exception) {
-                    Log.w(TAG, "Skipping invalid value for $key: ${element}")
+                    Log.w(TAG, "Invalid value for $key: ${element}")
                 }
-            } else {
-                Log.w(TAG, "Ignoring unknown parameter from AI: $key")
             }
         }
-
         return fromMap(values)
     }
 
@@ -123,8 +123,39 @@ class MorphParameterParser {
             "foreheadslope" -> "foreheadSlope"
             "facewidth" -> "faceWidth"
             "facelength" -> "faceLength"
+            // Hallucination mappings
+            "jawprotrusion" -> "chinProtrusion"
+            "eyewidth" -> "eyeSize"
+            "nosesize" -> "noseWidth"
+            "browheight" -> "eyebrowHeight"
             else -> key
         }
+    }
+
+    /**
+     * Fixes common JSON errors from small LLMs without using complex Regex.
+     */
+    private fun repairJson(raw: String): String {
+        return raw
+            .replace(Regex(""",\s*}"""), "}") // Remove trailing comma
+            .trim()
+    }
+
+    /**
+     * Fallback: manually extract "key": value pairs if JSON is totally broken.
+     */
+    private fun extractKeyValuesManually(text: String): Map<String, Float> {
+        val params = mutableMapOf<String, Float>()
+        // Match: "someKey" : 1.23
+        val pattern = Regex("\"(\\w+)\"\\s*:\\s*(\\d+\\.?\\d*)")
+        pattern.findAll(text).forEach { match ->
+            val key = normalizeKey(match.groupValues[1])
+            val value = match.groupValues[2].toFloatOrNull() ?: return@forEach
+            if (key in VALID_PARAMS) {
+                params[key] = value.coerceIn(0.0f, 2.0f)
+            }
+        }
+        return params
     }
 
     fun fromMap(values: Map<String, Float>): MorphParameters {

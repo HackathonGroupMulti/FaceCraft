@@ -432,7 +432,7 @@ class MainActivity : ComponentActivity() {
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        listOf("male", "female").forEach { template ->
+                        listOf("ally", "lisa").forEach { template ->
                             OutlinedButton(
                                 onClick = {
                                     webViewBridge?.loadTemplateModel(template)

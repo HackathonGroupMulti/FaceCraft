@@ -49,8 +49,7 @@ class NexaService private constructor(context: Context) {
     private val modelScope = CoroutineScope(Dispatchers.IO)
 
     /**
-     * Initialize Nexa SDK. 
-     * Note: License token is handled by the SDK internally or via manifest metadata in this version.
+     * Initialize Nexa SDK.
      */
     fun initialize(callback: InitCallback) {
         val ctx = context ?: return
@@ -177,6 +176,10 @@ class NexaService private constructor(context: Context) {
             }
     }
 
+    /**
+     * Correctly extract text from the Nexa SDK response.
+     * The SDK returns objects like Token(text="...") and Completed(profile=...).
+     */
     fun generateStream(prompt: String): Flow<StreamResult> = flow {
         val wrapper = vlmWrapper
         if (wrapper == null) {
@@ -195,11 +198,29 @@ class NexaService private constructor(context: Context) {
                 audioPaths = null,
                 audioCount = 0
             )
+            
             wrapper.generateStreamFlow(prompt, genConfig)
                 .collect { result ->
-                    emit(StreamResult.Token(result.toString()))
+                    // The SDK result is likely an object. We need to extract the text property.
+                    // Using reflection or toString parsing as a robust fallback if direct access is restricted
+                    val resultStr = result.toString()
+                    if (resultStr.contains("text=")) {
+                        // Extract text between 'text=' and ')' or ','
+                        val start = resultStr.indexOf("text=") + 5
+                        var end = resultStr.indexOf(")", start)
+                        val comma = resultStr.indexOf(",", start)
+                        if (comma != -1 && comma < end) end = comma
+                        
+                        if (start > 4 && end > start) {
+                            val text = resultStr.substring(start, end)
+                            emit(StreamResult.Token(text))
+                        }
+                    } else if (resultStr.startsWith("Completed")) {
+                        emit(StreamResult.Completed(0, 0, 0, 0f))
+                    } else if (result is String) {
+                        emit(StreamResult.Token(result))
+                    }
                 }
-            emit(StreamResult.Completed(0, 0, 0, 0f))
         } catch (e: Exception) {
             emit(StreamResult.Error(e.message ?: "Generation failed"))
         }
