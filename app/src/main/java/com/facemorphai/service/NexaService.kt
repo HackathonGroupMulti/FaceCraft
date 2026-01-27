@@ -201,15 +201,19 @@ class NexaService private constructor(context: Context) {
             
             wrapper.generateStreamFlow(prompt, genConfig)
                 .collect { result ->
-                    // The SDK result is likely an object. We need to extract the text property.
-                    // Using reflection or toString parsing as a robust fallback if direct access is restricted
+                    // The SDK result is an object. We extract the text property from its string representation.
                     val resultStr = result.toString()
+                    
                     if (resultStr.contains("text=")) {
-                        // Extract text between 'text=' and ')' or ','
+                        // Surgically extract text content: finds "text=" and grabs until the closing part
                         val start = resultStr.indexOf("text=") + 5
                         var end = resultStr.indexOf(")", start)
                         val comma = resultStr.indexOf(",", start)
-                        if (comma != -1 && comma < end) end = comma
+                        
+                        // Handle cases where comma comes before closing parenthesis
+                        if (comma in (start + 1)..<end) {
+                            end = comma
+                        }
                         
                         if (start > 4 && end > start) {
                             val text = resultStr.substring(start, end)
@@ -217,8 +221,6 @@ class NexaService private constructor(context: Context) {
                         }
                     } else if (resultStr.startsWith("Completed")) {
                         emit(StreamResult.Completed(0, 0, 0, 0f))
-                    } else if (result is String) {
-                        emit(StreamResult.Token(result))
                     }
                 }
         } catch (e: Exception) {

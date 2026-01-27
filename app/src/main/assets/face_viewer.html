@@ -5,1116 +5,167 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <title>FaceCraft 3D Viewer</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
-        body {
-            overflow: hidden;
-            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        }
-
-        #container {
-            width: 100vw;
-            height: 100vh;
-            position: relative;
-        }
-
-        #loading {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            color: #fff;
-            font-size: 16px;
-            text-align: center;
-            z-index: 100;
-        }
-
-        .spinner {
-            width: 40px;
-            height: 40px;
-            border: 3px solid rgba(255,255,255,0.3);
-            border-top-color: #fff;
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-            margin: 0 auto 16px;
-        }
-
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-
-        #error {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            color: #ff6b6b;
-            font-size: 14px;
-            text-align: center;
-            padding: 20px;
-            display: none;
-            z-index: 100;
-        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { overflow: hidden; background: #1a1a2e; font-family: sans-serif; }
+        #container { width: 100vw; height: 100vh; position: relative; }
+        #loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #fff; text-align: center; z-index: 10; }
+        .spinner { width: 30px; height: 30px; border: 2px solid rgba(255,255,255,0.1); border-top-color: #9A64DE; border-radius: 50%; animation: spin 1s linear infinite; margin-bottom: 10px; }
+        @keyframes spin { to { transform: rotate(360deg); } }
     </style>
 </head>
 <body>
     <div id="container">
-        <div id="loading">
-            <div class="spinner"></div>
-            <div>Loading 3D Model...</div>
-        </div>
-        <div id="error"></div>
+        <div id="loading"><div class="spinner"></div></div>
     </div>
 
-    <!-- Three.js from CDN -->
+    <!-- Three.js and Loaders -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/fflate@0.6.9/umd/index.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/FBXLoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/libs/fflate.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 
     <script>
-        // ============================================
-        // FaceCraft 3D Viewer
-        // Handles 3D face rendering and morph targets
-        // ============================================
-        //
-        // 3D Model Credits:
-        // "Lisa - Woman Head with BlendShapes" (https://skfb.ly/o69ns) by skullvez
-        // Licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
-        //
-        // "Ally Pretty Beautiful Face Head Model With Hair" (https://skfb.ly/oC7Jx) by skullvez
-        // Licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
-        // ============================================
-
-        // Android Bridge reference
-        const Android = window.AndroidBridge || {
-            log: (msg) => console.log('[Android]', msg),
-            error: (msg) => console.error('[Android]', msg),
-            onModelLoaded: () => {},
-            onModelLoadError: (err) => {},
-            onMorphApplied: () => {},
-            onParameterChanged: (name, value) => {},
-            onScreenshotReady: (dataUrl) => {},
-            onCurrentMorphs: (json) => {}
-        };
-
-        // Global state
-        let scene, camera, renderer, controls;
-        let faceMesh = null;
-        let currentModel = null;
+        const Android = window.AndroidBridge || { log: console.log, error: console.error, onModelLoaded: () => {} };
+        let scene, camera, renderer, controls, currentModel = null;
         let allMeshes = [];
-        let morphTargets = {};
         let currentMorphValues = {};
-        let animationId = null;
 
-        // Default morph parameter values
-        const DEFAULT_MORPH_VALUE = 1.0;
-
-        // All parameter names (for reset and tracking)
-        const ALL_PARAMS = [
-            'eyeSize', 'eyeSharpness', 'eyeAngle', 'eyeSpacing', 'eyeDepth',
-            'eyebrowHeight', 'eyebrowAngle', 'eyebrowThickness',
-            'noseWidth', 'noseLength', 'noseBridge', 'noseTip', 'nostrilSize',
-            'jawWidth', 'jawSharpness', 'chinLength', 'chinWidth', 'chinProtrusion',
-            'cheekHeight', 'cheekWidth', 'cheekDepth',
-            'lipFullness', 'lipWidth', 'mouthSize', 'mouthCorner',
-            'upperLipHeight', 'lowerLipHeight',
-            'foreheadHeight', 'foreheadWidth', 'foreheadSlope',
-            'faceWidth', 'faceLength'
-        ];
-
-        // Map our semantic parameters to ARKit blend shapes in the FBX models.
-        // 'positive' shapes activate when param > 1.0 (bigger/more)
-        // 'negative' shapes activate when param < 1.0 (smaller/less)
-        // Influence = |param - 1.0|, clamped to 0-1
-        const BLEND_SHAPE_MAP = {
-            eyeSize: {
-                positive: ['EyeOpen_L', 'EyeOpen_R'],
-                negative: ['EyeSquint_L', 'EyeSquint_R']
-            },
-            eyeSharpness: {
-                positive: ['EyeSquint_L', 'EyeSquint_R'],
-                negative: ['EyeOpen_L', 'EyeOpen_R']
-            },
-            eyebrowHeight: {
-                positive: ['BrowsU_L', 'BrowsU_R', 'BrowsU_C'],
-                negative: ['BrowsD_L', 'BrowsD_R']
-            },
-            eyebrowAngle: {
-                positive: ['BrowsU_C'],
-                negative: ['BrowsD_L', 'BrowsD_R']
-            },
-            jawWidth: {
-                positive: ['JawOpen'],
-                negative: []
-            },
-            jawSharpness: {
-                positive: ['JawFwd'],
-                negative: []
-            },
-            chinLength: {
-                positive: ['ChinLowerRaise'],
-                negative: ['ChinUpperRaise']
-            },
-            chinProtrusion: {
-                positive: ['JawFwd'],
-                negative: []
-            },
-            cheekWidth: {
-                positive: ['Puff'],
-                negative: ['CheekSquint_L', 'CheekSquint_R']
-            },
-            cheekHeight: {
-                positive: ['CheekSquint_L', 'CheekSquint_R'],
-                negative: []
-            },
-            lipFullness: {
-                positive: ['LipsFunnel', 'LipsUpperUp'],
-                negative: ['LipsUpperClose', 'LipsLowerClose']
-            },
-            lipWidth: {
-                positive: ['LipsStretch_L', 'LipsStretch_R'],
-                negative: ['LipsPucker']
-            },
-            mouthSize: {
-                positive: ['JawOpen', 'LipsLowerDown'],
-                negative: ['LipsLowerClose', 'LipsUpperClose']
-            },
-            mouthCorner: {
-                positive: ['MouthSmile_L', 'MouthSmile_R'],
-                negative: ['MouthFrown_L', 'MouthFrown_R']
-            },
-            upperLipHeight: {
-                positive: ['LipsUpperUp', 'LipsUpperOpen'],
-                negative: ['LipsUpperClose']
-            },
-            lowerLipHeight: {
-                positive: ['LipsLowerDown', 'LipsLowerOpen'],
-                negative: ['LipsLowerClose']
-            },
-            noseWidth: {
-                positive: ['Sneer'],
-                negative: []
-            }
-        };
-
-        // Initialize the 3D scene
         function init() {
-            Android.log('Initializing 3D viewer...');
-
-            const container = document.getElementById('container');
-
-            // Scene
             scene = new THREE.Scene();
-            scene.background = new THREE.Color(0x1a1a2e);
+            scene.background = new THREE.Color(0x161625); // Deep Grey-Purple
 
-            // Camera
-            camera = new THREE.PerspectiveCamera(
-                45,
-                window.innerWidth / window.innerHeight,
-                0.1,
-                1000
-            );
-            camera.position.set(0, 0, 3);
+            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 2000);
+            camera.position.set(0, 40, 120);
 
-            // Renderer
-            renderer = new THREE.WebGLRenderer({
-                antialias: true,
-                preserveDrawingBuffer: true // For screenshots
-            });
+            renderer = new THREE.WebGLRenderer({ antialias: true });
             renderer.setSize(window.innerWidth, window.innerHeight);
             renderer.setPixelRatio(window.devicePixelRatio);
-            renderer.outputEncoding = THREE.sRGBEncoding;
-            renderer.toneMapping = THREE.ACESFilmicToneMapping;
-            renderer.toneMappingExposure = 1.0;
-            container.appendChild(renderer.domElement);
+            document.getElementById('container').appendChild(renderer.domElement);
 
-            // Orbit Controls
             controls = new THREE.OrbitControls(camera, renderer.domElement);
             controls.enableDamping = true;
-            controls.dampingFactor = 0.05;
-            controls.minDistance = 1;
-            controls.maxDistance = 10;
-            controls.target.set(0, 0, 0);
+            controls.target.set(0, 40, 0);
+
+            // Grid Helper (Blender Style)
+            const gridColor = new THREE.Color(0x9A64DE).multiplyScalar(0.2);
+            const grid = new THREE.GridHelper(400, 40, gridColor, 0x2a2a3a);
+            grid.position.y = -20; // Slightly below model
+            scene.add(grid);
+
+            // Polar Grid for vertical alignment feel
+            const polarGrid = new THREE.PolarGridHelper(200, 16, 8, 64, 0x2a2a3a, 0x1a1a2a);
+            polarGrid.rotation.x = Math.PI / 2;
+            polarGrid.position.z = -50;
+            scene.add(polarGrid);
 
             // Lighting
-            setupLighting();
-
-            // Handle resize
-            window.addEventListener('resize', onWindowResize);
-
-            // Start render loop
-            animate();
-
-            // Load default template
-            loadTemplateModel('default');
-
-            Android.log('3D viewer initialized');
-        }
-
-        function setupLighting() {
-            // Ambient light
-            const ambient = new THREE.AmbientLight(0xffffff, 0.4);
+            const ambient = new THREE.AmbientLight(0xffffff, 0.6);
             scene.add(ambient);
+            const directional = new THREE.DirectionalLight(0xffffff, 0.8);
+            directional.position.set(50, 100, 50);
+            scene.add(directional);
 
-            // Key light (main)
-            const keyLight = new THREE.DirectionalLight(0xffffff, 0.8);
-            keyLight.position.set(1, 1, 2);
-            scene.add(keyLight);
+            window.addEventListener('resize', () => {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            });
 
-            // Fill light
-            const fillLight = new THREE.DirectionalLight(0xffffff, 0.3);
-            fillLight.position.set(-1, 0, 1);
-            scene.add(fillLight);
-
-            // Rim light
-            const rimLight = new THREE.DirectionalLight(0xffffff, 0.2);
-            rimLight.position.set(0, 1, -1);
-            scene.add(rimLight);
-        }
-
-        function onWindowResize() {
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight);
+            animate();
+            loadTemplateModel('ally');
         }
 
         function animate() {
-            animationId = requestAnimationFrame(animate);
+            requestAnimationFrame(animate);
             controls.update();
             renderer.render(scene, camera);
         }
 
-        // ============================================
-        // Model Loading
-        // ============================================
-
         function loadModel(path) {
-            Android.log('Loading model: ' + path);
-            Android.log('Current location: ' + window.location.href);
-            showLoading(true);
+            Android.log('Loading FBX: ' + path);
+            document.getElementById('loading').style.display = 'block';
 
-            if (typeof THREE === 'undefined') {
-                Android.error('THREE.js not loaded - check internet connection');
-                showError('3D library not loaded');
-                return;
-            }
-            if (typeof THREE.FBXLoader === 'undefined') {
-                Android.error('FBXLoader not available');
-                showError('FBX loader not loaded');
-                return;
-            }
+            if (currentModel) scene.remove(currentModel);
+            allMeshes = [];
 
             const loader = new THREE.FBXLoader();
+            loader.load(path, (object) => {
+                currentModel = object;
+                object.traverse((child) => {
+                    if (child.isMesh) {
+                        allMeshes.push(child);
+                        if (child.geometry.attributes.position) {
+                            child.userData.originalPositions = child.geometry.attributes.position.array.slice();
+                        }
+                    }
+                });
 
-            loader.load(
-                path,
-                (fbxGroup) => {
-                    Android.log('FBX loaded successfully');
-                    onModelLoaded(fbxGroup);
-                },
-                (progress) => {
-                    if (progress.total > 0) {
-                        const percent = (progress.loaded / progress.total * 100).toFixed(0);
-                        Android.log('Loading progress: ' + percent + '%');
-                    } else {
-                        Android.log('Loading... (size unknown)');
-                    }
-                },
-                (error) => {
-                    let errorMsg = 'Unknown error';
-                    if (error) {
-                        if (error.message) errorMsg = error.message;
-                        else if (error.target && error.target.status) errorMsg = 'HTTP ' + error.target.status;
-                        else errorMsg = JSON.stringify(error);
-                    }
-                    Android.error('Model load error: ' + errorMsg);
-                    Android.error('Failed path: ' + path);
-                    showError('Failed to load model: ' + errorMsg);
-                    Android.onModelLoadError(errorMsg);
-                }
-            );
+                // Auto-center and scale
+                const box = new THREE.Box3().setFromObject(object);
+                const size = box.getSize(new THREE.Vector3());
+                const center = box.getCenter(new THREE.Vector3());
+                const scale = 80 / Math.max(size.x, size.y, size.z);
+                object.scale.setScalar(scale);
+                object.position.sub(center.multiplyScalar(scale));
+
+                scene.add(object);
+                document.getElementById('loading').style.display = 'none';
+                Android.log('FBX Loaded: ' + path);
+                Android.onModelLoaded();
+            }, undefined, (err) => {
+                Android.error('FBX Load Error: ' + err.message);
+            });
         }
 
-        function loadTemplateModel(templateId) {
-            Android.log('Loading template: ' + templateId);
-            showLoading(true);
-
-            // Map template IDs to model paths (use relative paths from HTML location)
-            const modelPaths = {
-                'ally': 'models/ally/scene.fbx',
-                'lisa': 'models/lisa/scene.fbx',
-                'default': 'models/lisa/scene.fbx'
-            };
-
-            const path = modelPaths[templateId] || modelPaths['default'];
-            Android.log('Loading model from relative path: ' + path);
+        function loadTemplateModel(name) {
+            const path = 'models/' + name + '/scene.fbx';
             loadModel(path);
         }
 
-        function createProceduralHead(style) {
-            // Remove existing mesh
-            if (faceMesh) {
-                scene.remove(faceMesh);
-                faceMesh.geometry.dispose();
-                if (faceMesh.material.dispose) faceMesh.material.dispose();
-            }
-
-            // Create a stylized head geometry
-            const geometry = new THREE.SphereGeometry(1, 64, 64);
-
-            // Modify vertices to look more like a head
-            const positions = geometry.attributes.position;
-            for (let i = 0; i < positions.count; i++) {
-                const x = positions.getX(i);
-                const y = positions.getY(i);
-                const z = positions.getZ(i);
-
-                // Flatten the back
-                if (z < -0.3) {
-                    positions.setZ(i, z * 0.7);
-                }
-
-                // Elongate vertically for face shape
-                positions.setY(i, y * 1.2);
-
-                // Narrow the sides slightly
-                if (Math.abs(x) > 0.5) {
-                    positions.setX(i, x * 0.9);
-                }
-
-                // Add chin
-                if (y < -0.5 && z > 0) {
-                    positions.setY(i, y * 0.85);
-                    positions.setZ(i, z * 0.9);
-                }
-            }
-
-            geometry.computeVertexNormals();
-
-            // Material based on style
-            let skinColor;
-            switch (style) {
-                case 'male':
-                    skinColor = new THREE.Color(0xd4a574);
-                    break;
-                case 'female':
-                    skinColor = new THREE.Color(0xe8c4a0);
-                    break;
-                case 'stylized':
-                    skinColor = new THREE.Color(0x9ecfff);
-                    break;
-                default:
-                    skinColor = new THREE.Color(0xdbb896);
-            }
-
-            const material = new THREE.MeshStandardMaterial({
-                color: skinColor,
-                roughness: 0.7,
-                metalness: 0.0,
-                flatShading: false
-            });
-
-            faceMesh = new THREE.Mesh(geometry, material);
-            faceMesh.name = 'face';
-            scene.add(faceMesh);
-
-            // Store original positions for morphing
-            faceMesh.userData.originalPositions = positions.array.slice();
-
-            // Initialize morph values
-            resetMorphValues();
-
-            showLoading(false);
-            Android.log('Procedural head created: ' + style);
-            Android.onModelLoaded();
-        }
-
-        function onModelLoaded(model) {
-            // Remove existing model
-            if (currentModel) {
-                scene.remove(currentModel);
-                currentModel = null;
-            }
-            faceMesh = null;
-            allMeshes = [];
-            morphTargets = {};
-
-            // Collect all meshes and store original positions for morphing
-            model.traverse((child) => {
-                if (child.isMesh) {
-                    allMeshes.push(child);
-
-                    // Store original positions for procedural morphing
-                    if (child.geometry && child.geometry.attributes.position) {
-                        child.userData.originalPositions = child.geometry.attributes.position.array.slice();
-                    }
-
-                    // Use first mesh as main face mesh
-                    if (!faceMesh) {
-                        faceMesh = child;
-                    }
-
-                    // Check for morph targets (blend shapes from FBX)
-                    if (child.morphTargetDictionary) {
-                        morphTargets = { ...morphTargets, ...child.morphTargetDictionary };
-                        Android.log('Found morph targets on "' + child.name + '": ' + Object.keys(child.morphTargetDictionary).join(', '));
-                    }
-                }
-            });
-
-            // Center and scale model
-            const box = new THREE.Box3().setFromObject(model);
-            const center = box.getCenter(new THREE.Vector3());
-            const size = box.getSize(new THREE.Vector3());
-
-            // Scale to fit nicely in view
-            const maxDim = Math.max(size.x, size.y, size.z);
-            const scale = 2.5 / maxDim;
-            model.scale.setScalar(scale);
-
-            // Center the model
-            box.setFromObject(model);
-            box.getCenter(center);
-            model.position.sub(center);
-
-            currentModel = model;
-            scene.add(model);
-
-            // Store original scale for model-level transformations
-            currentModel.userData.originalScale = currentModel.scale.clone();
-
-            // Initialize morph values
-            resetMorphValues();
-
-            showLoading(false);
-            Android.log('Model loaded successfully with ' + allMeshes.length + ' meshes');
-            Android.log('Meshes have originalPositions: ' + allMeshes.filter(m => m.userData.originalPositions).length);
-            Android.onModelLoaded();
-        }
-
-        // ============================================
-        // Morph Controls
-        // ============================================
-
-        function applyMorphs(params) {
-            Android.log('applyMorphs called with: ' + JSON.stringify(params));
-
-            const keys = Object.keys(params);
-            if (keys.length === 0) {
-                Android.log('No morph parameters to apply');
-                return;
-            }
-
-            for (const [key, value] of Object.entries(params)) {
-                Android.log('Setting ' + key + ' = ' + value);
-                setMorph(key, value);
-            }
-
-            Android.onMorphApplied();
-        }
-
-        function setMorph(paramName, value) {
-            if (!faceMesh) {
-                Android.error('setMorph: No face mesh loaded');
-                return;
-            }
-
-            // Store the value
-            currentMorphValues[paramName] = value;
-
-            const blendMapping = BLEND_SHAPE_MAP[paramName];
-            let blendShapeApplied = false;
-
-            // Primary: Apply ARKit blend shapes if available
-            if (blendMapping) {
-                const factor = value - 1.0; // -1 to +1
-                const positiveInfluence = Math.max(0, Math.min(1, factor));
-                const negativeInfluence = Math.max(0, Math.min(1, -factor));
-
-                // Apply to all meshes that have morph targets
-                for (const mesh of allMeshes) {
-                    if (!mesh.morphTargetDictionary || !mesh.morphTargetInfluences) continue;
-
-                    // Activate positive blend shapes (param > 1.0)
-                    for (const shapeName of blendMapping.positive) {
-                        const idx = mesh.morphTargetDictionary[shapeName];
-                        if (idx !== undefined) {
-                            mesh.morphTargetInfluences[idx] = positiveInfluence;
-                            blendShapeApplied = true;
-                        }
-                    }
-
-                    // Activate negative blend shapes (param < 1.0)
-                    for (const shapeName of blendMapping.negative) {
-                        const idx = mesh.morphTargetDictionary[shapeName];
-                        if (idx !== undefined) {
-                            mesh.morphTargetInfluences[idx] = negativeInfluence;
-                            blendShapeApplied = true;
-                        }
-                    }
-                }
-            }
-
-            // Fallback: procedural vertex morphing for params without blend shapes
-            if (!blendShapeApplied) {
-                if (allMeshes.length > 0 || faceMesh.userData.originalPositions) {
-                    applyProceduralMorph(paramName, value);
-                }
-                if (currentModel) {
-                    applyModelTransform();
-                }
-            }
-
-            Android.onParameterChanged(paramName, value);
-        }
-
-        // Apply model-level scale transformations for visible effect
-        function applyModelTransform() {
-            if (!currentModel || !currentModel.userData.originalScale) {
-                if (currentModel) {
-                    currentModel.userData.originalScale = currentModel.scale.clone();
-                }
-                return;
-            }
-
-            const orig = currentModel.userData.originalScale;
-            const faceWidth = currentMorphValues['faceWidth'] || 1.0;
-            const faceLength = currentMorphValues['faceLength'] || 1.0;
-            const jawWidth = currentMorphValues['jawWidth'] || 1.0;
-
-            // Apply subtle scale changes for visible feedback
-            const scaleX = orig.x * (0.85 + faceWidth * 0.15 + (jawWidth - 1.0) * 0.1);
-            const scaleY = orig.y * (0.85 + faceLength * 0.15);
-
-            currentModel.scale.set(scaleX, scaleY, orig.z);
-        }
-
-        function applyProceduralMorph(paramName, value) {
-            // Apply morphing to all meshes in the model
+        function animateMorphs(params) {
+            currentMorphValues = { ...currentMorphValues, ...params };
             for (const mesh of allMeshes) {
                 if (!mesh.userData.originalPositions) continue;
-
                 const positions = mesh.geometry.attributes.position;
                 const original = mesh.userData.originalPositions;
+                const current = new Float32Array(original);
 
-                // Create a copy of original positions
-                const newPositions = new Float32Array(original);
-
-                // Get bounding box for normalization
-                const bbox = mesh.userData.bbox || computeMeshBounds(original);
-                mesh.userData.bbox = bbox;
-
-                // Apply all current morph values
-                for (const [name, val] of Object.entries(currentMorphValues)) {
-                    applyMorphToPositionsNormalized(newPositions, name, val, bbox);
-                }
-
-                // Update geometry
-                for (let i = 0; i < positions.count; i++) {
-                    positions.setXYZ(i, newPositions[i * 3], newPositions[i * 3 + 1], newPositions[i * 3 + 2]);
-                }
-                positions.needsUpdate = true;
-                mesh.geometry.computeVertexNormals();
-            }
-
-            // Fallback for procedural mesh
-            if (faceMesh && faceMesh.userData.originalPositions && allMeshes.length === 0) {
-                const positions = faceMesh.geometry.attributes.position;
-                const original = faceMesh.userData.originalPositions;
-                const newPositions = new Float32Array(original);
-
-                for (const [name, val] of Object.entries(currentMorphValues)) {
-                    applyMorphToPositions(newPositions, name, val);
+                // Procedural vertex scaling
+                for (const [key, val] of Object.entries(currentMorphValues)) {
+                    const factor = val - 1.0;
+                    for (let i = 0; i < current.length; i += 3) {
+                        // Very basic procedural deformation
+                        if (key === 'faceWidth' && Math.abs(current[i]) > 5) current[i] *= (1 + factor * 0.1);
+                        if (key === 'eyeSize' && current[i+1] > 40 && Math.abs(current[i]) > 5) current[i+1] *= (1 + factor * 0.05);
+                    }
                 }
 
                 for (let i = 0; i < positions.count; i++) {
-                    positions.setXYZ(i, newPositions[i * 3], newPositions[i * 3 + 1], newPositions[i * 3 + 2]);
+                    positions.setXYZ(i, current[i*3], current[i*3+1], current[i*3+2]);
                 }
                 positions.needsUpdate = true;
-                faceMesh.geometry.computeVertexNormals();
             }
-        }
-
-        function computeMeshBounds(positions) {
-            let minX = Infinity, maxX = -Infinity;
-            let minY = Infinity, maxY = -Infinity;
-            let minZ = Infinity, maxZ = -Infinity;
-
-            for (let i = 0; i < positions.length; i += 3) {
-                minX = Math.min(minX, positions[i]);
-                maxX = Math.max(maxX, positions[i]);
-                minY = Math.min(minY, positions[i + 1]);
-                maxY = Math.max(maxY, positions[i + 1]);
-                minZ = Math.min(minZ, positions[i + 2]);
-                maxZ = Math.max(maxZ, positions[i + 2]);
-            }
-
-            return {
-                minX, maxX, minY, maxY, minZ, maxZ,
-                centerX: (minX + maxX) / 2,
-                centerY: (minY + maxY) / 2,
-                centerZ: (minZ + maxZ) / 2,
-                sizeX: maxX - minX,
-                sizeY: maxY - minY,
-                sizeZ: maxZ - minZ
-            };
-        }
-
-        function applyMorphToPositionsNormalized(positions, paramName, value, bbox) {
-            const factor = value - 1.0;
-            const count = positions.length / 3;
-
-            // Stronger multipliers for more visible effects
-            const STRENGTH = 0.4;
-
-            for (let i = 0; i < count; i++) {
-                const x = positions[i * 3];
-                const y = positions[i * 3 + 1];
-                const z = positions[i * 3 + 2];
-
-                // Normalize coordinates to -1 to 1 range
-                const nx = (x - bbox.centerX) / (bbox.sizeX / 2);
-                const ny = (y - bbox.centerY) / (bbox.sizeY / 2);
-                const nz = (z - bbox.centerZ) / (bbox.sizeZ / 2);
-
-                // Apply transformations based on normalized coordinates
-                switch (paramName) {
-                    case 'faceWidth':
-                        // Scale width of entire face front
-                        if (nz > -0.5) {
-                            positions[i * 3] = x + (x - bbox.centerX) * factor * STRENGTH;
-                        }
-                        break;
-
-                    case 'faceLength':
-                        // Scale height of entire face
-                        if (nz > -0.5) {
-                            positions[i * 3 + 1] = y + (y - bbox.centerY) * factor * STRENGTH;
-                        }
-                        break;
-
-                    case 'jawWidth':
-                        // Lower third of face - X scaling
-                        if (ny < 0 && nz > -0.3) {
-                            const blend = Math.max(0, -ny);
-                            positions[i * 3] = x + (x - bbox.centerX) * factor * STRENGTH * blend;
-                        }
-                        break;
-
-                    case 'jawSharpness':
-                        // Chin area - Y compression
-                        if (ny < -0.3 && nz > 0) {
-                            const blend = Math.max(0, (-ny - 0.3) / 0.7);
-                            positions[i * 3 + 1] = y - (y - bbox.minY) * factor * STRENGTH * 0.5 * blend;
-                        }
-                        break;
-
-                    case 'cheekWidth':
-                        // Middle sides of face
-                        if (ny > -0.4 && ny < 0.4 && Math.abs(nx) > 0.2 && nz > -0.2) {
-                            const blend = Math.abs(nx);
-                            positions[i * 3] = x + (x - bbox.centerX) * factor * STRENGTH * blend;
-                        }
-                        break;
-
-                    case 'cheekHeight':
-                        // Cheek area - Y position
-                        if (ny > -0.2 && ny < 0.4 && Math.abs(nx) > 0.3 && nz > 0) {
-                            positions[i * 3 + 1] = y + factor * bbox.sizeY * 0.05;
-                        }
-                        break;
-
-                    case 'noseWidth':
-                        // Center of face, protruding area
-                        if (ny > -0.3 && ny < 0.3 && Math.abs(nx) < 0.3 && nz > 0.3) {
-                            positions[i * 3] = x + (x - bbox.centerX) * factor * STRENGTH * 1.5;
-                        }
-                        break;
-
-                    case 'noseLength':
-                        // Nose tip area - Z protrusion
-                        if (ny > -0.4 && ny < 0.2 && Math.abs(nx) < 0.25 && nz > 0.4) {
-                            positions[i * 3 + 2] = z + (z - bbox.centerZ) * factor * STRENGTH;
-                        }
-                        break;
-
-                    case 'foreheadHeight':
-                        // Upper part of face
-                        if (ny > 0.3) {
-                            const blend = (ny - 0.3) / 0.7;
-                            positions[i * 3 + 1] = y + (y - bbox.centerY) * factor * STRENGTH * blend;
-                        }
-                        break;
-
-                    case 'chinLength':
-                        // Chin - bottom part
-                        if (ny < -0.4) {
-                            const blend = (-ny - 0.4) / 0.6;
-                            positions[i * 3 + 1] = y + (y - bbox.centerY) * factor * STRENGTH * blend;
-                        }
-                        break;
-
-                    case 'lipFullness':
-                        // Mouth area - Z protrusion
-                        if (ny > -0.4 && ny < 0.1 && Math.abs(nx) < 0.3 && nz > 0.3) {
-                            positions[i * 3 + 2] = z + (z - bbox.centerZ) * factor * STRENGTH * 0.8;
-                        }
-                        break;
-
-                    case 'eyeSize':
-                        // Eye regions - scale around eye centers
-                        if (ny > 0.1 && ny < 0.6 && Math.abs(nx) > 0.1 && Math.abs(nx) < 0.6 && nz > 0) {
-                            const eyeCenterX = nx > 0 ? 0.35 : -0.35;
-                            const eyeCenterY = 0.35;
-                            const dx = nx - eyeCenterX;
-                            const dy = ny - eyeCenterY;
-                            positions[i * 3] = x + dx * bbox.sizeX * 0.5 * factor * STRENGTH;
-                            positions[i * 3 + 1] = y + dy * bbox.sizeY * 0.5 * factor * STRENGTH;
-                        }
-                        break;
-
-                    case 'eyeSpacing':
-                        // Eyes - horizontal spread
-                        if (ny > 0.1 && ny < 0.6 && Math.abs(nx) > 0.1 && nz > 0) {
-                            positions[i * 3] = x + (x - bbox.centerX) * factor * STRENGTH * 0.6;
-                        }
-                        break;
-
-                    case 'eyebrowHeight':
-                        // Above eyes
-                        if (ny > 0.4 && ny < 0.7 && Math.abs(nx) > 0.1 && Math.abs(nx) < 0.6) {
-                            positions[i * 3 + 1] = y + factor * bbox.sizeY * 0.08;
-                        }
-                        break;
-                }
-            }
-        }
-
-        function applyMorphToPositions(positions, paramName, value) {
-            const factor = value - 1.0; // Convert 0-2 to -1 to 1
-            const count = positions.length / 3;
-
-            for (let i = 0; i < count; i++) {
-                const x = positions[i * 3];
-                const y = positions[i * 3 + 1];
-                const z = positions[i * 3 + 2];
-
-                // Apply different transformations based on parameter
-                switch (paramName) {
-                    // Eyes (upper face, z > 0)
-                    case 'eyeSize':
-                        if (y > 0.2 && y < 0.6 && Math.abs(x) > 0.2 && z > 0.3) {
-                            positions[i * 3] = x * (1 + factor * 0.1);
-                            positions[i * 3 + 1] = y * (1 + factor * 0.1);
-                        }
-                        break;
-
-                    case 'eyeSpacing':
-                        if (y > 0.2 && y < 0.6 && z > 0.3) {
-                            positions[i * 3] = x * (1 + factor * 0.15);
-                        }
-                        break;
-
-                    // Nose (center, z > 0.5)
-                    case 'noseWidth':
-                        if (y > -0.2 && y < 0.3 && Math.abs(x) < 0.3 && z > 0.5) {
-                            positions[i * 3] = x * (1 + factor * 0.2);
-                        }
-                        break;
-
-                    case 'noseLength':
-                        if (y > -0.3 && y < 0.2 && Math.abs(x) < 0.2 && z > 0.6) {
-                            positions[i * 3 + 2] = z * (1 + factor * 0.15);
-                        }
-                        break;
-
-                    // Jaw (lower face)
-                    case 'jawWidth':
-                        if (y < -0.3) {
-                            positions[i * 3] = x * (1 + factor * 0.2);
-                        }
-                        break;
-
-                    case 'jawSharpness':
-                        if (y < -0.4 && z > 0) {
-                            positions[i * 3 + 1] = y * (1 - factor * 0.1);
-                        }
-                        break;
-
-                    case 'chinLength':
-                        if (y < -0.6) {
-                            positions[i * 3 + 1] = y * (1 + factor * 0.15);
-                        }
-                        break;
-
-                    // Cheeks
-                    case 'cheekWidth':
-                        if (y > -0.2 && y < 0.3 && Math.abs(x) > 0.4 && z > 0) {
-                            positions[i * 3] = x * (1 + factor * 0.15);
-                        }
-                        break;
-
-                    case 'cheekHeight':
-                        if (y > 0 && y < 0.4 && Math.abs(x) > 0.3 && z > 0.2) {
-                            positions[i * 3 + 1] = y + factor * 0.05;
-                        }
-                        break;
-
-                    // Lips
-                    case 'lipFullness':
-                        if (y > -0.4 && y < -0.1 && Math.abs(x) < 0.3 && z > 0.5) {
-                            positions[i * 3 + 2] = z * (1 + factor * 0.1);
-                        }
-                        break;
-
-                    case 'mouthSize':
-                        if (y > -0.4 && y < -0.1 && z > 0.5) {
-                            positions[i * 3] = x * (1 + factor * 0.15);
-                        }
-                        break;
-
-                    // Forehead
-                    case 'foreheadHeight':
-                        if (y > 0.6) {
-                            positions[i * 3 + 1] = y * (1 + factor * 0.1);
-                        }
-                        break;
-
-                    // Overall face
-                    case 'faceWidth':
-                        if (z > 0) {
-                            positions[i * 3] = x * (1 + factor * 0.1);
-                        }
-                        break;
-
-                    case 'faceLength':
-                        if (z > 0) {
-                            positions[i * 3 + 1] = y * (1 + factor * 0.1);
-                        }
-                        break;
-                }
-            }
-        }
-
-        function animateMorphs(params, durationMs = 500) {
-            Android.log('animateMorphs called with: ' + JSON.stringify(params));
-
-            const keys = Object.keys(params);
-            if (keys.length === 0) {
-                Android.log('No morph parameters to apply');
-                return;
-            }
-
-            Android.log('Animating ' + keys.length + ' parameters: ' + keys.join(', '));
-
-            const startTime = performance.now();
-            const startValues = { ...currentMorphValues };
-            const targetValues = { ...params };
-
-            function update() {
-                const elapsed = performance.now() - startTime;
-                const progress = Math.min(elapsed / durationMs, 1);
-
-                // Ease out cubic
-                const eased = 1 - Math.pow(1 - progress, 3);
-
-                for (const [key, targetValue] of Object.entries(targetValues)) {
-                    const startValue = startValues[key] || 1.0;
-                    const currentValue = startValue + (targetValue - startValue) * eased;
-                    setMorph(key, currentValue);
-                }
-
-                if (progress < 1) {
-                    requestAnimationFrame(update);
-                } else {
-                    Android.log('Morph animation complete');
-                    Android.onMorphApplied();
-                }
-            }
-
-            update();
         }
 
         function resetMorphs() {
-            Android.log('Resetting morphs');
-
-            // Reset all morph values to default
-            for (const paramName of ALL_PARAMS) {
-                currentMorphValues[paramName] = 1.0;
-            }
-
-            // Reset all blend shape influences to 0
-            for (const mesh of allMeshes) {
-                if (mesh.morphTargetInfluences) {
-                    for (let i = 0; i < mesh.morphTargetInfluences.length; i++) {
-                        mesh.morphTargetInfluences[i] = 0;
-                    }
-                }
-            }
-
-            // Reset model scale
-            if (currentModel && currentModel.userData.originalScale) {
-                currentModel.scale.copy(currentModel.userData.originalScale);
-            }
-
-            // Reset vertex positions
+            currentMorphValues = {};
             for (const mesh of allMeshes) {
                 if (mesh.userData.originalPositions) {
                     const positions = mesh.geometry.attributes.position;
                     const original = mesh.userData.originalPositions;
                     for (let i = 0; i < positions.count; i++) {
-                        positions.setXYZ(i, original[i * 3], original[i * 3 + 1], original[i * 3 + 2]);
+                        positions.setXYZ(i, original[i*3], original[i*3+1], original[i*3+2]);
                     }
                     positions.needsUpdate = true;
-                    mesh.geometry.computeVertexNormals();
                 }
             }
-
-            Android.onMorphApplied();
         }
-
-        function resetMorphValues() {
-            currentMorphValues = {};
-            for (const paramName of ALL_PARAMS) {
-                currentMorphValues[paramName] = 1.0;
-            }
-        }
-
-        function getCurrentMorphs() {
-            const json = JSON.stringify(currentMorphValues);
-            Android.onCurrentMorphs(json);
-        }
-
-        // ============================================
-        // Camera Controls
-        // ============================================
-
-        function setCameraPosition(x, y, z) {
-            camera.position.set(x, y, z);
-            camera.lookAt(controls.target);
-        }
-
-        function focusOnRegion(region) {
-            let target, position;
-
-            switch (region.toLowerCase()) {
-                case 'eyes':
-                    target = new THREE.Vector3(0, 0.35, 0);
-                    position = new THREE.Vector3(0, 0.35, 2);
-                    break;
-                case 'nose':
-                    target = new THREE.Vector3(0, 0, 0);
-                    position = new THREE.Vector3(0, 0, 2);
-                    break;
-                case 'mouth':
-                case 'lips':
-                    target = new THREE.Vector3(0, -0.25, 0);
-                    position = new THREE.Vector3(0, -0.25, 2);
-                    break;
-                case 'jaw':
-                case 'chin':
-                    target = new THREE.Vector3(0, -0.5, 0);
-                    position = new THREE.Vector3(0, -0.3, 2.5);
-                    break;
-                default:
-                    target = new THREE.Vector3(0, 0, 0);
-                    position = new THREE.Vector3(0, 0, 3);
-            }
-
-            // Animate camera
-            animateCamera(position, target);
-        }
-
-        function animateCamera(targetPosition, targetLookAt, duration = 500) {
-            const startPosition = camera.position.clone();
-            const startLookAt = controls.target.clone();
-            const startTime = performance.now();
-
-            function update() {
-                const elapsed = performance.now() - startTime;
-                const progress = Math.min(elapsed / duration, 1);
-                const eased = 1 - Math.pow(1 - progress, 3);
-
-                camera.position.lerpVectors(startPosition, targetPosition, eased);
-                controls.target.lerpVectors(startLookAt, targetLookAt, eased);
-
-                if (progress < 1) {
-                    requestAnimationFrame(update);
-                }
-            }
-
-            update();
-        }
-
-        function resetCamera() {
-            animateCamera(
-                new THREE.Vector3(0, 0, 3),
-                new THREE.Vector3(0, 0, 0)
-            );
-        }
-
-        function setOrbitControls(enabled) {
-            controls.enabled = enabled;
-        }
-
-        // ============================================
-        // Utilities
-        // ============================================
-
-        function setBackgroundColor(color) {
-            scene.background = new THREE.Color(color);
-        }
-
-        function setWireframe(enabled) {
-            if (faceMesh && faceMesh.material) {
-                faceMesh.material.wireframe = enabled;
-            }
-        }
-
-        function takeScreenshot() {
-            renderer.render(scene, camera);
-            const dataUrl = renderer.domElement.toDataURL('image/png');
-            Android.onScreenshotReady(dataUrl);
-        }
-
-        function showLoading(show) {
-            document.getElementById('loading').style.display = show ? 'block' : 'none';
-        }
-
-        function showError(message) {
-            showLoading(false);
-            const errorDiv = document.getElementById('error');
-            errorDiv.textContent = message;
-            errorDiv.style.display = 'block';
-        }
-
-        // ============================================
-        // Initialize on load
-        // ============================================
 
         window.onload = init;
-
-        // Expose functions for Android bridge
-        window.loadModel = loadModel;
         window.loadTemplateModel = loadTemplateModel;
-        window.applyMorphs = applyMorphs;
-        window.setMorph = setMorph;
+        window.applyMorphs = animateMorphs;
         window.animateMorphs = animateMorphs;
         window.resetMorphs = resetMorphs;
-        window.getCurrentMorphs = getCurrentMorphs;
-        window.setCameraPosition = setCameraPosition;
-        window.focusOnRegion = focusOnRegion;
-        window.resetCamera = resetCamera;
-        window.setOrbitControls = setOrbitControls;
-        window.setBackgroundColor = setBackgroundColor;
-        window.setWireframe = setWireframe;
-        window.takeScreenshot = takeScreenshot;
     </script>
 </body>
 </html>

@@ -1,7 +1,7 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
-    id("org.jetbrains.kotlin.plugin.serialization") version "1.9.23"
+    id("org.jetbrains.kotlin.plugin.serialization")
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
@@ -37,8 +37,10 @@ android {
         targetCompatibility = JavaVersion.VERSION_11
     }
 
-    kotlinOptions {
-        jvmTarget = "11"
+    kotlin {
+        compilerOptions {
+            jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11)
+        }
     }
 
     buildFeatures {
@@ -58,13 +60,17 @@ android {
 }
 
 dependencies {
-    // NexaSDK - using + for latest version like their demo
+    // NexaSDK
     implementation("ai.nexa:core:+")
 
-    // AndroidX Core
+    // AndroidX Core & Splash
     implementation("androidx.core:core-ktx:1.17.0")
+    implementation("androidx.core:core-splashscreen:1.0.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.10.0")
     implementation("androidx.activity:activity-compose:1.12.2")
+
+    // Material Components (Required for XML themes like Theme.Material3)
+    implementation("com.google.android.material:material:1.12.0")
 
     // Jetpack Compose
     implementation(platform("androidx.compose:compose-bom:2026.01.00"))
