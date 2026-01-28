@@ -13,53 +13,62 @@ import kotlinx.coroutines.withContext
 /**
  * Service that handles face morph generation using the VLM.
  * Takes natural language descriptions and converts them to morph parameters.
+ * Uses dynamically discovered blendshape names from the FBX model.
  */
 class FaceMorphService(private val context: Context) {
 
     companion object {
         private const val TAG = "FaceMorphService"
 
-        /**
-         * System prompt that instructs the LLM how to generate morph parameters.
-         * Strength increased to ensure JSON-only output.
-         */
-        private val SYSTEM_PROMPT = """
+        private fun buildSystemPrompt(blendShapeNames: List<String>): String {
+            val namesList = blendShapeNames.joinToString(", ")
+            return """
 Output ONLY a JSON object. No markdown, no text, no explanation.
-Values: 0.0-2.0 (1.0=neutral, >1.0=bigger, <1.0=smaller).
+Values: 0.0-1.0 (0.0=no change, 0.5=moderate, 1.0=maximum effect).
 
-Parameters: eyeSize, eyeSpacing, eyeDepth, eyebrowHeight, noseWidth, noseLength, noseTip, jawWidth, jawSharpness, chinLength, chinWidth, chinProtrusion, cheekHeight, cheekWidth, lipFullness, lipWidth, mouthSize, foreheadHeight, faceWidth, faceLength
+Available shape keys: $namesList
 
-Example input: "make eyes bigger and nose thinner"
-Example output: {"eyeSize":1.3,"noseWidth":0.8}
+Example input: "make eyes bigger"
+Example output: {"${blendShapeNames.firstOrNull() ?: "shape_name"}":0.6}
 
 """.trimIndent()
+        }
 
-        /**
-         * Regional prompts for when user selects a specific face region.
-         */
-        private fun getRegionalPrompt(region: FaceRegion): String {
-            return when (region) {
-                FaceRegion.EYES -> "Focus ONLY on eye and eyebrow parameters."
-                FaceRegion.NOSE -> "Focus ONLY on nose parameters."
-                FaceRegion.JAW_CHIN -> "Focus ONLY on jaw and chin parameters."
-                FaceRegion.CHEEKS -> "Focus ONLY on cheek parameters."
-                FaceRegion.MOUTH_LIPS -> "Focus ONLY on mouth and lip parameters."
-                FaceRegion.FOREHEAD -> "Focus ONLY on forehead parameters."
-                FaceRegion.FACE_SHAPE -> "Focus ONLY on overall face shape, width, and length."
-                FaceRegion.ALL -> "You may modify any parameters to achieve the look."
+        private fun getRegionalPrompt(region: FaceRegion, blendShapeNames: List<String>): String {
+            if (region == FaceRegion.ALL) {
+                return "You may modify any shape keys to achieve the look."
+            }
+            val matching = blendShapeNames.filter { region.matchesBlendShape(it) }
+            return if (matching.isNotEmpty()) {
+                "Focus ONLY on these shape keys: ${matching.joinToString(", ")}"
+            } else {
+                "Focus on shape keys related to: ${region.displayName}"
             }
         }
     }
 
     private val nexaService = NexaService.getInstance(context)
-    private val parser = MorphParameterParser()
+    val parser = MorphParameterParser()
 
     private var currentParameters = MorphParameters.DEFAULT
     private var useMockMode = false
+    private var blendShapeNames: List<String> = emptyList()
 
     fun setMockMode(enabled: Boolean) {
         useMockMode = enabled
     }
+
+    /**
+     * Update the available blendshape names from the loaded FBX model.
+     * This rebuilds the AI prompt to use the actual shape key names.
+     */
+    fun updateBlendShapeNames(names: List<String>) {
+        blendShapeNames = names
+        parser.updateValidParams(names)
+        Log.d(TAG, "BlendShape names updated: ${names.size} shapes")
+    }
+
+    fun getBlendShapeNames(): List<String> = blendShapeNames
 
     suspend fun generateMorph(request: MorphRequest): MorphResult = withContext(Dispatchers.IO) {
         val startTime = System.currentTimeMillis()
@@ -68,8 +77,19 @@ Example output: {"eyeSize":1.3,"noseWidth":0.8}
             return@withContext generateMockMorph(request, startTime)
         }
 
-        val regionalInstruction = getRegionalPrompt(request.region)
-        val fullPrompt = "$SYSTEM_PROMPT\nRequest: ${request.prompt}\nRegion Focus: $regionalInstruction\nOutput JSON:"
+        if (blendShapeNames.isEmpty()) {
+            return@withContext MorphResult(
+                parameters = currentParameters,
+                generationTimeMs = System.currentTimeMillis() - startTime,
+                tokensGenerated = 0,
+                success = false,
+                errorMessage = "No blendshape names available. Load a model first."
+            )
+        }
+
+        val systemPrompt = buildSystemPrompt(blendShapeNames)
+        val regionalInstruction = getRegionalPrompt(request.region, blendShapeNames)
+        val fullPrompt = "$systemPrompt\nRequest: ${request.prompt}\nRegion Focus: $regionalInstruction\nOutput JSON:"
 
         Log.d(TAG, "Sending prompt to VLM: $fullPrompt")
 
@@ -128,83 +148,52 @@ Example output: {"eyeSize":1.3,"noseWidth":0.8}
 
     private fun applyIntensity(params: MorphParameters, intensity: Float): MorphParameters {
         if (intensity == 1.0f) return params
-        val scaled = params.toMap().mapValues { (_, value) ->
-            val deviation = value - 1.0f
-            (1.0f + deviation * intensity).coerceIn(0.0f, 2.0f)
+        val scaled = params.values.mapValues { (_, value) ->
+            (value * intensity).coerceIn(0.0f, 1.0f)
         }
-        return parser.fromMap(scaled)
+        return MorphParameters(scaled)
     }
 
     fun getCurrentParameters(): MorphParameters = currentParameters
     fun resetParameters() { currentParameters = MorphParameters.DEFAULT }
 
     private fun generateMockMorph(request: MorphRequest, startTime: Long): MorphResult {
+        if (blendShapeNames.isEmpty()) {
+            return MorphResult(
+                parameters = currentParameters,
+                generationTimeMs = System.currentTimeMillis() - startTime,
+                tokensGenerated = 0,
+                success = false,
+                errorMessage = "No blendshape names available for mock mode"
+            )
+        }
+
         val prompt = request.prompt.lowercase()
         val params = mutableMapOf<String, Float>()
 
-        // Keyword-based parameter mapping
-        if (prompt.contains("big") || prompt.contains("larger") || prompt.contains("wider")) {
-            when (request.region) {
-                FaceRegion.EYES -> params["eyeSize"] = 1.35f
-                FaceRegion.NOSE -> params["noseWidth"] = 1.3f
-                FaceRegion.MOUTH_LIPS -> { params["lipFullness"] = 1.3f; params["mouthSize"] = 1.2f }
-                FaceRegion.JAW_CHIN -> { params["jawWidth"] = 1.3f; params["chinWidth"] = 1.2f }
-                FaceRegion.CHEEKS -> params["cheekWidth"] = 1.3f
-                FaceRegion.FOREHEAD -> params["foreheadHeight"] = 1.3f
-                else -> params["faceWidth"] = 1.2f
-            }
-        }
-        if (prompt.contains("small") || prompt.contains("thin") || prompt.contains("narrow")) {
-            when (request.region) {
-                FaceRegion.EYES -> params["eyeSize"] = 0.75f
-                FaceRegion.NOSE -> params["noseWidth"] = 0.75f
-                FaceRegion.MOUTH_LIPS -> params["lipFullness"] = 0.75f
-                FaceRegion.JAW_CHIN -> { params["jawWidth"] = 0.75f; params["jawSharpness"] = 1.3f }
-                else -> params["faceWidth"] = 0.85f
-            }
-        }
-        if (prompt.contains("long") || prompt.contains("longer")) {
-            when (request.region) {
-                FaceRegion.NOSE -> params["noseLength"] = 1.35f
-                FaceRegion.JAW_CHIN -> { params["chinLength"] = 1.35f; params["chinProtrusion"] = 1.2f }
-                FaceRegion.FOREHEAD -> params["foreheadHeight"] = 1.35f
-                else -> params["faceLength"] = 1.25f
-            }
-        }
-        if (prompt.contains("short") || prompt.contains("shorter")) {
-            when (request.region) {
-                FaceRegion.NOSE -> params["noseLength"] = 0.7f
-                FaceRegion.JAW_CHIN -> params["chinLength"] = 0.7f
-                FaceRegion.FOREHEAD -> params["foreheadHeight"] = 0.7f
-                else -> params["faceLength"] = 0.8f
-            }
-        }
-        if (prompt.contains("sharp") || prompt.contains("angular")) {
-            params["jawSharpness"] = 1.4f; params["cheekHeight"] = 1.2f
-        }
-        if (prompt.contains("round") || prompt.contains("soft")) {
-            params["jawSharpness"] = 0.7f; params["cheekWidth"] = 1.2f
-        }
-        if (prompt.contains("full") || prompt.contains("plump")) {
-            params["lipFullness"] = 1.4f; params["cheekWidth"] = 1.15f
+        // Find blendshapes matching the selected region
+        val regionShapes = if (request.region == FaceRegion.ALL) {
+            blendShapeNames
+        } else {
+            blendShapeNames.filter { request.region.matchesBlendShape(it) }
+                .ifEmpty { blendShapeNames }
         }
 
-        // If no keywords matched, apply a default change for the selected region
-        if (params.isEmpty()) {
-            Log.d(TAG, "Mock: no keywords matched, applying default for region ${request.region}")
-            when (request.region) {
-                FaceRegion.EYES -> params["eyeSize"] = 1.15f
-                FaceRegion.NOSE -> params["noseWidth"] = 1.1f
-                FaceRegion.JAW_CHIN -> params["jawWidth"] = 1.1f
-                FaceRegion.CHEEKS -> params["cheekWidth"] = 1.1f
-                FaceRegion.MOUTH_LIPS -> params["lipFullness"] = 1.15f
-                FaceRegion.FOREHEAD -> params["foreheadHeight"] = 1.1f
-                FaceRegion.FACE_SHAPE -> params["faceWidth"] = 1.1f
-                FaceRegion.ALL -> params["faceWidth"] = 1.1f
-            }
+        // Determine intensity from keywords
+        val value = when {
+            prompt.contains("big") || prompt.contains("larger") || prompt.contains("wider") ||
+            prompt.contains("full") || prompt.contains("plump") || prompt.contains("long") -> 0.6f
+            prompt.contains("small") || prompt.contains("thin") || prompt.contains("narrow") ||
+            prompt.contains("short") -> 0.2f
+            else -> 0.4f
         }
 
-        val newParams = parser.fromMap(params)
+        // Apply to first few matching shapes
+        regionShapes.take(3).forEach { name ->
+            params[name] = value
+        }
+
+        val newParams = MorphParameters(params)
         currentParameters = currentParameters.mergeWith(newParams)
 
         return MorphResult(

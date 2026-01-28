@@ -25,19 +25,257 @@
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 
     <script>
-        const Android = window.AndroidBridge || { log: console.log, error: console.error, onModelLoaded: () => {} };
+        const Android = window.AndroidBridge || {
+            log: console.log, error: console.error,
+            onModelLoaded: function(){}, onModelLoadError: function(){}, onMorphApplied: function(){},
+            onParameterChanged: function(){}, onScreenshotReady: function(){}, onCurrentMorphs: function(){},
+            onBlendShapeNames: function(json){ console.log("BlendShape names:", json); }
+        };
+
         let scene, camera, renderer, controls, currentModel = null;
         let allMeshes = [];
+        let headMesh = null; // mesh with morph targets (blendshapes)
         let currentMorphValues = {};
 
+        // Animation state for blendshape interpolation
+        let animFrameId = null;
+        let animStartTime = null;
+        let animDuration = 500;
+        let animFromInfluences = null; // {name: value} snapshot at anim start
+        let animToInfluences = null;   // {name: value} target values
+
+        // Default camera
+        const DEFAULT_CAM = { x: 0, y: 0, z: 150 };
+
+        // =============================================
+        // Math helpers
+        // =============================================
+        function clamp01(x) { return x < 0 ? 0 : x > 1 ? 1 : x; }
+
+        // =============================================
+        // Find the mesh with the most morph targets
+        // =============================================
+        function findMorphMesh(root) {
+            var best = null;
+            var bestCount = -1;
+            root.traverse(function(child) {
+                if (!(child.isMesh || child.isSkinnedMesh)) return;
+                var dict = child.morphTargetDictionary;
+                var count = dict ? Object.keys(dict).length : 0;
+                if (count > bestCount) { bestCount = count; best = child; }
+            });
+            return (bestCount > 0) ? best : null;
+        }
+
+        // =============================================
+        // Get current blendshape influence by name
+        // =============================================
+        function getInfluence(name) {
+            if (!headMesh || !headMesh.morphTargetDictionary || !headMesh.morphTargetInfluences) return 0;
+            var idx = headMesh.morphTargetDictionary[name];
+            if (idx === undefined) return 0;
+            return headMesh.morphTargetInfluences[idx];
+        }
+
+        // =============================================
+        // Snapshot all current influences as {name: value}
+        // =============================================
+        function snapshotInfluences() {
+            var snap = {};
+            if (!headMesh || !headMesh.morphTargetDictionary || !headMesh.morphTargetInfluences) return snap;
+            var dict = headMesh.morphTargetDictionary;
+            for (var name in dict) {
+                snap[name] = headMesh.morphTargetInfluences[dict[name]];
+            }
+            return snap;
+        }
+
+        // =============================================
+        // Apply morphs instantly (no animation)
+        // =============================================
+        function applyMorphsImmediate(params) {
+            if (!headMesh || !headMesh.morphTargetDictionary || !headMesh.morphTargetInfluences) return;
+
+            for (var name in params) {
+                var idx = headMesh.morphTargetDictionary[name];
+                if (idx === undefined) {
+                    Android.log('Unknown blendshape: ' + name);
+                    continue;
+                }
+                headMesh.morphTargetInfluences[idx] = clamp01(params[name]);
+                currentMorphValues[name] = clamp01(params[name]);
+            }
+            Android.onMorphApplied();
+        }
+
+        // =============================================
+        // Animate morphs smoothly over duration
+        // =============================================
+        function animateMorphsSmooth(params, duration) {
+            if (!headMesh || !headMesh.morphTargetDictionary || !headMesh.morphTargetInfluences) return;
+
+            duration = (typeof duration === 'number' && duration > 0) ? duration : 500;
+
+            // Snapshot current state for all keys we're going to animate
+            animFromInfluences = {};
+            animToInfluences = {};
+            for (var name in params) {
+                if (headMesh.morphTargetDictionary[name] === undefined) {
+                    Android.log('Unknown blendshape: ' + name);
+                    continue;
+                }
+                animFromInfluences[name] = getInfluence(name);
+                animToInfluences[name] = clamp01(params[name]);
+            }
+
+            // Update target morph values
+            for (var name in animToInfluences) {
+                currentMorphValues[name] = animToInfluences[name];
+            }
+
+            animDuration = duration;
+            animStartTime = performance.now();
+
+            if (animFrameId) cancelAnimationFrame(animFrameId);
+            animFrameId = requestAnimationFrame(animStep);
+        }
+
+        function animStep(timestamp) {
+            if (animStartTime === null) return;
+            var elapsed = timestamp - animStartTime;
+            var t = Math.min(elapsed / animDuration, 1.0);
+            var eased = t * t * (3 - 2 * t); // smoothstep easing
+
+            var dict = headMesh.morphTargetDictionary;
+
+            for (var name in animToInfluences) {
+                var idx = dict[name];
+                if (idx === undefined) continue;
+                var from = animFromInfluences[name];
+                var to = animToInfluences[name];
+                headMesh.morphTargetInfluences[idx] = from + (to - from) * eased;
+            }
+
+            if (t < 1.0) {
+                animFrameId = requestAnimationFrame(animStep);
+            } else {
+                animFrameId = null;
+                animStartTime = null;
+                animFromInfluences = null;
+                animToInfluences = null;
+                Android.onMorphApplied();
+            }
+        }
+
+        // =============================================
+        // Reset morphs back to default (all influences = 0)
+        // =============================================
+        function resetMorphs() {
+            currentMorphValues = {};
+            if (!headMesh || !headMesh.morphTargetInfluences) return;
+            for (var i = 0; i < headMesh.morphTargetInfluences.length; i++) {
+                headMesh.morphTargetInfluences[i] = 0;
+            }
+        }
+
+        // =============================================
+        // Set a single morph parameter
+        // =============================================
+        function setMorph(name, value) {
+            var p = {};
+            p[name] = value;
+            applyMorphsImmediate(p);
+        }
+
+        // =============================================
+        // Get current morph values
+        // =============================================
+        function getCurrentMorphs() {
+            Android.onCurrentMorphs(JSON.stringify(currentMorphValues));
+        }
+
+        // =============================================
+        // Get blendshape names
+        // =============================================
+        function getBlendShapeNames() {
+            if (!headMesh || !headMesh.morphTargetDictionary) {
+                Android.onBlendShapeNames(JSON.stringify([]));
+                return;
+            }
+            Android.onBlendShapeNames(JSON.stringify(Object.keys(headMesh.morphTargetDictionary)));
+        }
+
+        // =============================================
+        // Camera controls
+        // =============================================
+        function setCameraPosition(x, y, z) {
+            camera.position.set(x, y, z);
+            camera.lookAt(controls.target);
+        }
+
+        function focusOnRegion(region) {
+            var pos = { x: 0, y: 0, z: 100 };
+            switch (region) {
+                case 'eyes':     pos = { x: 0, y: 15, z: 80 }; break;
+                case 'nose':     pos = { x: 0, y: 0, z: 70 };  break;
+                case 'mouth':    pos = { x: 0, y: -10, z: 75 }; break;
+                case 'jaw':      pos = { x: 0, y: -20, z: 90 }; break;
+                case 'forehead': pos = { x: 0, y: 25, z: 85 }; break;
+                case 'cheeks':   pos = { x: 20, y: 5, z: 80 }; break;
+            }
+            camera.position.set(pos.x, pos.y, pos.z);
+            camera.lookAt(controls.target);
+        }
+
+        function resetCamera() {
+            camera.position.set(DEFAULT_CAM.x, DEFAULT_CAM.y, DEFAULT_CAM.z);
+            controls.target.set(0, 0, 0);
+            camera.lookAt(controls.target);
+        }
+
+        // =============================================
+        // Screenshot
+        // =============================================
+        function takeScreenshot() {
+            renderer.render(scene, camera);
+            var dataUrl = renderer.domElement.toDataURL('image/png');
+            Android.onScreenshotReady(dataUrl);
+        }
+
+        // =============================================
+        // Visual settings
+        // =============================================
+        function setBackgroundColor(color) {
+            scene.background = new THREE.Color(color);
+        }
+
+        function setWireframe(enabled) {
+            for (var i = 0; i < allMeshes.length; i++) {
+                if (allMeshes[i].material) {
+                    if (Array.isArray(allMeshes[i].material)) {
+                        allMeshes[i].material.forEach(function(m) { m.wireframe = enabled; });
+                    } else {
+                        allMeshes[i].material.wireframe = enabled;
+                    }
+                }
+            }
+        }
+
+        function setOrbitControls(enabled) {
+            controls.enabled = enabled;
+        }
+
+        // =============================================
+        // Scene initialization
+        // =============================================
         function init() {
             scene = new THREE.Scene();
-            scene.background = new THREE.Color(0x161625); // Deep Grey-Purple
+            scene.background = new THREE.Color(0x161625);
 
             camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 2000);
-            camera.position.set(0, 0, 150);
+            camera.position.set(DEFAULT_CAM.x, DEFAULT_CAM.y, DEFAULT_CAM.z);
 
-            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
             renderer.setSize(window.innerWidth, window.innerHeight);
             renderer.setPixelRatio(window.devicePixelRatio);
             document.getElementById('container').appendChild(renderer.domElement);
@@ -46,26 +284,25 @@
             controls.enableDamping = true;
             controls.target.set(0, 0, 0);
 
-            // Grid Helper (Blender Style)
-            const gridColor = new THREE.Color(0x9A64DE).multiplyScalar(0.2);
-            const grid = new THREE.GridHelper(400, 40, gridColor, 0x2a2a3a);
-            grid.position.y = -50; // Below the model
+            // Grid helpers
+            var gridColor = new THREE.Color(0x9A64DE).multiplyScalar(0.2);
+            var grid = new THREE.GridHelper(400, 40, gridColor, 0x2a2a3a);
+            grid.position.y = -50;
             scene.add(grid);
 
-            // Polar Grid for vertical alignment feel
-            const polarGrid = new THREE.PolarGridHelper(200, 16, 8, 64, 0x2a2a3a, 0x1a1a2a);
+            var polarGrid = new THREE.PolarGridHelper(200, 16, 8, 64, 0x2a2a3a, 0x1a1a2a);
             polarGrid.rotation.x = Math.PI / 2;
             polarGrid.position.z = -50;
             scene.add(polarGrid);
 
             // Lighting
-            const ambient = new THREE.AmbientLight(0xffffff, 0.6);
+            var ambient = new THREE.AmbientLight(0xffffff, 0.6);
             scene.add(ambient);
-            const directional = new THREE.DirectionalLight(0xffffff, 0.8);
+            var directional = new THREE.DirectionalLight(0xffffff, 0.8);
             directional.position.set(50, 100, 50);
             scene.add(directional);
 
-            window.addEventListener('resize', () => {
+            window.addEventListener('resize', function() {
                 camera.aspect = window.innerWidth / window.innerHeight;
                 camera.updateProjectionMatrix();
                 renderer.setSize(window.innerWidth, window.innerHeight);
@@ -81,91 +318,89 @@
             renderer.render(scene, camera);
         }
 
+        // =============================================
+        // Model loading
+        // =============================================
         function loadModel(path) {
             Android.log('Loading FBX: ' + path);
             document.getElementById('loading').style.display = 'block';
 
             if (currentModel) scene.remove(currentModel);
             allMeshes = [];
+            headMesh = null;
+            currentMorphValues = {};
 
-            const loader = new THREE.FBXLoader();
-            loader.load(path, (object) => {
+            var loader = new THREE.FBXLoader();
+            loader.load(path, function(object) {
                 currentModel = object;
-                object.traverse((child) => {
-                    if (child.isMesh) {
+
+                // Gather all meshes
+                object.traverse(function(child) {
+                    if (child.isMesh || child.isSkinnedMesh) {
                         allMeshes.push(child);
-                        if (child.geometry.attributes.position) {
-                            child.userData.originalPositions = child.geometry.attributes.position.array.slice();
-                        }
                     }
                 });
 
                 // Auto-center and scale
-                const box = new THREE.Box3().setFromObject(object);
-                const size = box.getSize(new THREE.Vector3());
-                const center = box.getCenter(new THREE.Vector3());
-                const scale = 100 / Math.max(size.x, size.y, size.z); // Increased scale slightly
+                var box = new THREE.Box3().setFromObject(object);
+                var size = box.getSize(new THREE.Vector3());
+                var center = box.getCenter(new THREE.Vector3());
+                var scale = 100 / Math.max(size.x, size.y, size.z);
                 object.scale.setScalar(scale);
                 object.position.sub(center.multiplyScalar(scale));
 
                 scene.add(object);
+
+                // Find the mesh with morph targets (blendshapes)
+                headMesh = findMorphMesh(object);
+
+                if (headMesh && headMesh.morphTargetDictionary) {
+                    var names = Object.keys(headMesh.morphTargetDictionary);
+                    Android.log('Blendshapes found on "' + (headMesh.name || 'unnamed') + '": ' + names.length);
+                    Android.log('Blendshape names: ' + JSON.stringify(names));
+                    // Report blendshape names to Android
+                    Android.onBlendShapeNames(JSON.stringify(names));
+                } else {
+                    Android.log('No blendshapes found in model');
+                    Android.onBlendShapeNames(JSON.stringify([]));
+                }
+
                 document.getElementById('loading').style.display = 'none';
-                Android.log('FBX Loaded: ' + path);
+                Android.log('FBX Loaded: ' + path + ' | Meshes: ' + allMeshes.length);
                 Android.onModelLoaded();
-            }, undefined, (err) => {
-                Android.error('FBX Load Error: ' + err.message);
+            }, undefined, function(err) {
+                Android.error('FBX Load Error: ' + (err.message || err));
+                Android.onModelLoadError('FBX Load Error: ' + (err.message || err));
+                document.getElementById('loading').style.display = 'none';
             });
         }
 
         function loadTemplateModel(name) {
-            const path = 'models/' + name + '/scene.fbx';
+            var path = 'models/' + name + '/scene.fbx';
             loadModel(path);
         }
 
-        function animateMorphs(params) {
-            currentMorphValues = { ...currentMorphValues, ...params };
-            for (const mesh of allMeshes) {
-                if (!mesh.userData.originalPositions) continue;
-                const positions = mesh.geometry.attributes.position;
-                const original = mesh.userData.originalPositions;
-                const current = new Float32Array(original);
-
-                // Procedural vertex scaling
-                for (const [key, val] of Object.entries(currentMorphValues)) {
-                    const factor = val - 1.0;
-                    for (let i = 0; i < current.length; i += 3) {
-                        // Very basic procedural deformation
-                        if (key === 'faceWidth' && Math.abs(current[i]) > 5) current[i] *= (1 + factor * 0.1);
-                        if (key === 'eyeSize' && current[i+1] > 40 && Math.abs(current[i]) > 5) current[i+1] *= (1 + factor * 0.05);
-                    }
-                }
-
-                for (let i = 0; i < positions.count; i++) {
-                    positions.setXYZ(i, current[i*3], current[i*3+1], current[i*3+2]);
-                }
-                positions.needsUpdate = true;
-            }
-        }
-
-        function resetMorphs() {
-            currentMorphValues = {};
-            for (const mesh of allMeshes) {
-                if (mesh.userData.originalPositions) {
-                    const positions = mesh.geometry.attributes.position;
-                    const original = mesh.userData.originalPositions;
-                    for (let i = 0; i < positions.count; i++) {
-                        positions.setXYZ(i, original[i*3], original[i*3+1], original[i*3+2]);
-                    }
-                    positions.needsUpdate = true;
-                }
-            }
-        }
-
+        // =============================================
+        // Init on load
+        // =============================================
         window.onload = init;
+
+        // Expose functions to Android bridge
+        window.loadModel = loadModel;
         window.loadTemplateModel = loadTemplateModel;
-        window.applyMorphs = animateMorphs;
-        window.animateMorphs = animateMorphs;
+        window.applyMorphs = applyMorphsImmediate;
+        window.animateMorphs = animateMorphsSmooth;
         window.resetMorphs = resetMorphs;
+        window.setMorph = setMorph;
+        window.getCurrentMorphs = getCurrentMorphs;
+        window.getBlendShapeNames = getBlendShapeNames;
+        window.setCameraPosition = setCameraPosition;
+        window.focusOnRegion = focusOnRegion;
+        window.resetCamera = resetCamera;
+        window.takeScreenshot = takeScreenshot;
+        window.setBackgroundColor = setBackgroundColor;
+        window.setWireframe = setWireframe;
+        window.setOrbitControls = setOrbitControls;
     </script>
 </body>
 </html>

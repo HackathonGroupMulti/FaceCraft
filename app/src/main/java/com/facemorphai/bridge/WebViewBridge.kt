@@ -12,6 +12,7 @@ import com.facemorphai.parser.MorphParameterParser
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import org.json.JSONArray
 
 /**
  * Bridge between Android (Kotlin) and Three.js (JavaScript) in WebView.
@@ -36,6 +37,7 @@ class WebViewBridge(
     var onModelLoadError: ((String) -> Unit)? = null
     var onMorphApplied: (() -> Unit)? = null
     var onUserInteraction: ((String, Float) -> Unit)? = null  // Parameter name, new value
+    var onBlendShapeNamesReceived: ((List<String>) -> Unit)? = null
 
     /**
      * Initialize the WebView with Three.js face viewer.
@@ -289,6 +291,24 @@ class WebViewBridge(
                     Log.e(TAG, "Failed to parse morphs from JS", e)
                 }
                 morphCallback = null
+            }
+        }
+
+        @JavascriptInterface
+        fun onBlendShapeNames(json: String) {
+            Log.d(TAG, "JS: BlendShape names received: $json")
+            scope.launch(Dispatchers.Main) {
+                try {
+                    val jsonArray = JSONArray(json)
+                    val names = mutableListOf<String>()
+                    for (i in 0 until jsonArray.length()) {
+                        names.add(jsonArray.getString(i))
+                    }
+                    Log.d(TAG, "Discovered ${names.size} blendshapes")
+                    onBlendShapeNamesReceived?.invoke(names)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to parse blendshape names", e)
+                }
             }
         }
 

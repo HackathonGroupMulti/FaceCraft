@@ -9,25 +9,24 @@ import kotlinx.serialization.json.jsonPrimitive
 
 /**
  * Parses LLM JSON output into MorphParameters.
- * Handles various edge cases and malformed output common in small local VLMs.
+ * Validates against dynamically discovered blendshape names from the FBX model.
  */
 class MorphParameterParser {
 
     companion object {
         private const val TAG = "MorphParameterParser"
+    }
 
-        // Valid parameter names for validation
-        private val VALID_PARAMS = setOf(
-            "eyeSize", "eyeSharpness", "eyeAngle", "eyeSpacing", "eyeDepth",
-            "eyebrowHeight", "eyebrowAngle", "eyebrowThickness",
-            "noseWidth", "noseLength", "noseBridge", "noseTip", "nostrilSize",
-            "jawWidth", "jawSharpness", "chinLength", "chinWidth", "chinProtrusion",
-            "cheekHeight", "cheekWidth", "cheekDepth",
-            "lipFullness", "lipWidth", "mouthSize", "mouthCorner",
-            "upperLipHeight", "lowerLipHeight",
-            "foreheadHeight", "foreheadWidth", "foreheadSlope",
-            "faceWidth", "faceLength"
-        )
+    // Dynamic set of valid parameter names, updated when blendshape names are discovered
+    var validParams: Set<String> = emptySet()
+        private set
+
+    /**
+     * Update the valid parameter names from discovered blendshape names.
+     */
+    fun updateValidParams(blendShapeNames: List<String>) {
+        validParams = blendShapeNames.toSet()
+        Log.d(TAG, "Valid params updated: ${validParams.size} blendshapes")
     }
 
     private val json = Json {
@@ -42,7 +41,6 @@ class MorphParameterParser {
     fun parse(llmOutput: String): Result<MorphParameters> {
         Log.d(TAG, "RAW AI OUTPUT: \"$llmOutput\"")
 
-        // 1. Try to find the JSON object boundaries
         val firstBrace = llmOutput.indexOf('{')
         val lastBrace = llmOutput.lastIndexOf('}')
 
@@ -53,7 +51,6 @@ class MorphParameterParser {
 
         val rawJson = llmOutput.substring(firstBrace, lastBrace + 1)
 
-        // 2. Repair and Parse
         return try {
             val jsonString = repairJson(rawJson)
             val jsonObject = json.parseToJsonElement(jsonString) as? JsonObject
@@ -76,123 +73,70 @@ class MorphParameterParser {
         val values = mutableMapOf<String, Float>()
         for ((key, element) in jsonObject) {
             val normalizedKey = normalizeKey(key)
-            if (normalizedKey in VALID_PARAMS) {
+            if (isValidParam(normalizedKey)) {
                 try {
                     val value = element.jsonPrimitive.float
-                    values[normalizedKey] = value.coerceIn(0.0f, 2.0f)
+                    values[normalizedKey] = value.coerceIn(0.0f, 1.0f)
                 } catch (e: Exception) {
-                    Log.w(TAG, "Invalid value for $key: ${element}")
+                    Log.w(TAG, "Invalid value for $key: $element")
                 }
+            } else {
+                Log.w(TAG, "Unknown blendshape key: $key (normalized: $normalizedKey)")
             }
         }
         return fromMap(values)
     }
 
+    /**
+     * Normalize a key from LLM output.
+     * Since blendshape names are used as-is, we just do basic cleanup.
+     * If validParams is populated, try case-insensitive matching.
+     */
     private fun normalizeKey(key: String): String {
-        val normalized = key.replace("_", "").replace("-", "").lowercase()
-        return when (normalized) {
-            "eyesize" -> "eyeSize"
-            "eyesharpness" -> "eyeSharpness"
-            "eyeangle" -> "eyeAngle"
-            "eyespacing" -> "eyeSpacing"
-            "eyedepth" -> "eyeDepth"
-            "eyebrowheight" -> "eyebrowHeight"
-            "eyebrowangle" -> "eyebrowAngle"
-            "eyebrowthickness" -> "eyebrowThickness"
-            "nosewidth" -> "noseWidth"
-            "noselength" -> "noseLength"
-            "nosebridge" -> "noseBridge"
-            "nosetip" -> "noseTip"
-            "nostrilsize" -> "nostrilSize"
-            "jawwidth" -> "jawWidth"
-            "jawsharpness" -> "jawSharpness"
-            "chinlength" -> "chinLength"
-            "chinwidth" -> "chinWidth"
-            "chinprotrusion" -> "chinProtrusion"
-            "cheekheight" -> "cheekHeight"
-            "cheekwidth" -> "cheekWidth"
-            "cheekdepth" -> "cheekDepth"
-            "lipfullness" -> "lipFullness"
-            "lipwidth" -> "lipWidth"
-            "mouthsize" -> "mouthSize"
-            "mouthcorner" -> "mouthCorner"
-            "upperlipheight" -> "upperLipHeight"
-            "lowerlipheight" -> "lowerLipHeight"
-            "foreheadheight" -> "foreheadHeight"
-            "foreheadwidth" -> "foreheadWidth"
-            "foreheadslope" -> "foreheadSlope"
-            "facewidth" -> "faceWidth"
-            "facelength" -> "faceLength"
-            // Hallucination mappings
-            "jawprotrusion" -> "chinProtrusion"
-            "eyewidth" -> "eyeSize"
-            "nosesize" -> "noseWidth"
-            "browheight" -> "eyebrowHeight"
-            else -> key
+        val trimmed = key.trim()
+
+        // If exact match exists, use it directly
+        if (trimmed in validParams) return trimmed
+
+        // Try case-insensitive match against known blendshape names
+        if (validParams.isNotEmpty()) {
+            val match = validParams.firstOrNull { it.equals(trimmed, ignoreCase = true) }
+            if (match != null) return match
         }
+
+        return trimmed
     }
 
     /**
-     * Fixes common JSON errors from small LLMs without using complex Regex.
+     * Check if a parameter name is valid.
+     * If no blendshape names have been set yet, accept anything.
      */
+    private fun isValidParam(key: String): Boolean {
+        if (validParams.isEmpty()) return true  // accept all if names not yet discovered
+        return key in validParams
+    }
+
     private fun repairJson(raw: String): String {
         return raw
-            .replace(Regex(""",\s*}"""), "}") // Remove trailing comma
+            .replace(Regex(""",\s*}"""), "}")
             .trim()
     }
 
-    /**
-     * Fallback: manually extract "key": value pairs if JSON is totally broken.
-     */
     private fun extractKeyValuesManually(text: String): Map<String, Float> {
         val params = mutableMapOf<String, Float>()
-        // Match: "someKey" : 1.23
-        val pattern = Regex("\"(\\w+)\"\\s*:\\s*(\\d+\\.?\\d*)")
+        val pattern = Regex("\"([^\"]+)\"\\s*:\\s*(\\d+\\.?\\d*)")
         pattern.findAll(text).forEach { match ->
             val key = normalizeKey(match.groupValues[1])
             val value = match.groupValues[2].toFloatOrNull() ?: return@forEach
-            if (key in VALID_PARAMS) {
-                params[key] = value.coerceIn(0.0f, 2.0f)
+            if (isValidParam(key)) {
+                params[key] = value.coerceIn(0.0f, 1.0f)
             }
         }
         return params
     }
 
     fun fromMap(values: Map<String, Float>): MorphParameters {
-        return MorphParameters(
-            eyeSize = values["eyeSize"] ?: 1.0f,
-            eyeSharpness = values["eyeSharpness"] ?: 1.0f,
-            eyeAngle = values["eyeAngle"] ?: 1.0f,
-            eyeSpacing = values["eyeSpacing"] ?: 1.0f,
-            eyeDepth = values["eyeDepth"] ?: 1.0f,
-            eyebrowHeight = values["eyebrowHeight"] ?: 1.0f,
-            eyebrowAngle = values["eyebrowAngle"] ?: 1.0f,
-            eyebrowThickness = values["eyebrowThickness"] ?: 1.0f,
-            noseWidth = values["noseWidth"] ?: 1.0f,
-            noseLength = values["noseLength"] ?: 1.0f,
-            noseBridge = values["noseBridge"] ?: 1.0f,
-            noseTip = values["noseTip"] ?: 1.0f,
-            nostrilSize = values["nostrilSize"] ?: 1.0f,
-            jawWidth = values["jawWidth"] ?: 1.0f,
-            jawSharpness = values["jawSharpness"] ?: 1.0f,
-            chinLength = values["chinLength"] ?: 1.0f,
-            chinWidth = values["chinWidth"] ?: 1.0f,
-            chinProtrusion = values["chinProtrusion"] ?: 1.0f,
-            cheekHeight = values["cheekHeight"] ?: 1.0f,
-            cheekWidth = values["cheekWidth"] ?: 1.0f,
-            cheekDepth = values["cheekDepth"] ?: 1.0f,
-            lipFullness = values["lipFullness"] ?: 1.0f,
-            lipWidth = values["lipWidth"] ?: 1.0f,
-            mouthSize = values["mouthSize"] ?: 1.0f,
-            mouthCorner = values["mouthCorner"] ?: 1.0f,
-            upperLipHeight = values["upperLipHeight"] ?: 1.0f,
-            lowerLipHeight = values["lowerLipHeight"] ?: 1.0f,
-            foreheadHeight = values["foreheadHeight"] ?: 1.0f,
-            foreheadWidth = values["foreheadWidth"] ?: 1.0f,
-            foreheadSlope = values["foreheadSlope"] ?: 1.0f,
-            faceWidth = values["faceWidth"] ?: 1.0f,
-            faceLength = values["faceLength"] ?: 1.0f
-        )
+        return MorphParameters(values)
     }
 
     fun toJson(params: MorphParameters): String {

@@ -219,9 +219,13 @@ class MainActivity : ComponentActivity() {
                     AndroidView(
                         factory = { ctx ->
                             WebView(ctx).also { webView ->
-                                webView.setBackgroundColor(0) 
+                                webView.setBackgroundColor(0)
                                 webViewBridge = WebViewBridge(webView, lifecycleScope).apply {
                                     initialize()
+                                    onBlendShapeNamesReceived = { names ->
+                                        Log.d(TAG, "BlendShape names received: ${names.size} shapes")
+                                        faceMorphService.updateBlendShapeNames(names)
+                                    }
                                     loadFaceViewer()
                                 }
                             }
@@ -459,7 +463,7 @@ class MainActivity : ComponentActivity() {
                         ) {
                             listOf("ally", "lisa").forEach { template ->
                                 Surface(
-                                    onClick = { webViewBridge?.loadTemplateModel(template) },
+                                    onClick = { faceMorphService.resetParameters(); webViewBridge?.loadTemplateModel(template) },
                                     modifier = Modifier.weight(1f).height(48.dp),
                                     shape = RoundedCornerShape(14.dp),
                                     color = Color.White.copy(alpha = 0.04f),
