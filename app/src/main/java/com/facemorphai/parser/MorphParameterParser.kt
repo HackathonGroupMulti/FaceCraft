@@ -117,17 +117,33 @@ class MorphParameterParser {
     }
 
     private fun repairJson(raw: String): String {
-        return raw
-            .replace(Regex(""",\s*}"""), "}")
-            .trim()
+        var repaired = raw.trim()
+
+        // Strip JavaScript-style line comments
+        repaired = repaired.replace(Regex("//[^\n]*"), "")
+
+        // Replace single quotes with double quotes for keys and string values
+        repaired = repaired.replace(Regex("'([^']*)'\\s*:")) { "\"${it.groupValues[1]}\":" }
+        repaired = repaired.replace(Regex(":\\s*'([^']*)'")) { ": \"${it.groupValues[1]}\"" }
+
+        // Quote unquoted keys: { key: 0.5 } → { "key": 0.5 }
+        repaired = repaired.replace(Regex("""(?<=\{|,)\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:""")) {
+            " \"${it.groupValues[1]}\":"
+        }
+
+        // Remove trailing commas before }
+        repaired = repaired.replace(Regex(""",\s*}"""), "}")
+
+        return repaired.trim()
     }
 
     private fun extractKeyValuesManually(text: String): Map<String, Float> {
         val params = mutableMapOf<String, Float>()
-        val pattern = Regex("\"([^\"]+)\"\\s*:\\s*(\\d+\\.?\\d*)")
+        // Match double-quoted, single-quoted, or unquoted keys with numeric values
+        val pattern = Regex("""(?:["']([^"']+)["']|([a-zA-Z_][a-zA-Z0-9_]*))\s*:\s*(-?\d+\.?\d*)""")
         pattern.findAll(text).forEach { match ->
-            val key = normalizeKey(match.groupValues[1])
-            val value = match.groupValues[2].toFloatOrNull() ?: return@forEach
+            val key = normalizeKey(match.groupValues[1].ifEmpty { match.groupValues[2] })
+            val value = match.groupValues[3].toFloatOrNull() ?: return@forEach
             if (isValidParam(key)) {
                 params[key] = value.coerceIn(0.0f, 1.0f)
             }

@@ -423,7 +423,7 @@ class MainActivity : ComponentActivity() {
                                             val result = faceMorphService.generateMorph(MorphRequest(region = selectedRegion, prompt = promptText))
                                             isLoading = false
                                             if (result.success) webViewBridge?.animateMorphs(result.parameters)
-                                            else lifecycleScope.launch(Dispatchers.Main) { Toast.makeText(context, "Neural Error", Toast.LENGTH_SHORT).show() }
+                                            else lifecycleScope.launch(Dispatchers.Main) { Toast.makeText(context, result.errorMessage ?: "Unknown error", Toast.LENGTH_SHORT).show() }
                                         }
                                     }
                                 },

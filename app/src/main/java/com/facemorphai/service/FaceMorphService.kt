@@ -89,50 +89,58 @@ Example output: {"${blendShapeNames.firstOrNull() ?: "shape_name"}":0.6}
 
         val systemPrompt = buildSystemPrompt(blendShapeNames)
         val regionalInstruction = getRegionalPrompt(request.region, blendShapeNames)
-        val fullPrompt = "$systemPrompt\nRequest: ${request.prompt}\nRegion Focus: $regionalInstruction\nOutput JSON:"
+        val currentState = parser.toJson(currentParameters)
+        val stateClause = if (currentState != "{}") "\nCurrent face state: $currentState" else ""
+        val fullPrompt = "$systemPrompt$stateClause\nRequest: ${request.prompt}\nRegion Focus: $regionalInstruction\nOutput JSON:"
 
         Log.d(TAG, "Sending prompt to VLM: $fullPrompt")
 
         try {
-            val result = nexaService.generate(prompt = fullPrompt, maxTokens = 128)
+            val maxAttempts = 2
+            var lastError: String? = null
 
-            result.fold(
-                onSuccess = { jsonOutput ->
-                    val parseResult = parser.parse(jsonOutput)
+            for (attempt in 1..maxAttempts) {
+                val result = nexaService.generate(prompt = fullPrompt, maxTokens = 256)
 
-                    parseResult.fold(
-                        onSuccess = { newParams ->
-                            val scaledParams = applyIntensity(newParams, request.intensity)
-                            currentParameters = currentParameters.mergeWith(scaledParams)
-                            MorphResult(
-                                parameters = currentParameters,
-                                generationTimeMs = System.currentTimeMillis() - startTime,
-                                tokensGenerated = jsonOutput.length / 4,
-                                success = true
-                            )
-                        },
-                        onFailure = { parseError ->
-                            Log.e(TAG, "Parse error: ${parseError.message}")
-                            MorphResult(
-                                parameters = currentParameters,
-                                generationTimeMs = System.currentTimeMillis() - startTime,
-                                tokensGenerated = 0,
-                                success = false,
-                                errorMessage = "VLM output was not valid JSON: ${parseError.message}"
-                            )
-                        }
-                    )
-                },
-                onFailure = { error ->
-                    Log.e(TAG, "Generation error: ${error.message}")
-                    MorphResult(
-                        parameters = currentParameters,
-                        generationTimeMs = System.currentTimeMillis() - startTime,
-                        tokensGenerated = 0,
-                        success = false,
-                        errorMessage = "VLM failed: ${error.message}"
-                    )
-                }
+                val morphResult = result.fold(
+                    onSuccess = { jsonOutput ->
+                        val parseResult = parser.parse(jsonOutput)
+
+                        parseResult.fold(
+                            onSuccess = { newParams ->
+                                val scaledParams = applyIntensity(newParams, request.intensity)
+                                currentParameters = currentParameters.mergeWith(scaledParams)
+                                MorphResult(
+                                    parameters = currentParameters,
+                                    generationTimeMs = System.currentTimeMillis() - startTime,
+                                    tokensGenerated = jsonOutput.length / 4,
+                                    success = true
+                                )
+                            },
+                            onFailure = { parseError ->
+                                Log.e(TAG, "Parse error (attempt $attempt/$maxAttempts): ${parseError.message}")
+                                lastError = "VLM output was not valid JSON: ${parseError.message}"
+                                null // signal retry
+                            }
+                        )
+                    },
+                    onFailure = { error ->
+                        Log.e(TAG, "Generation error (attempt $attempt/$maxAttempts): ${error.message}")
+                        lastError = "VLM failed: ${error.message}"
+                        null // signal retry
+                    }
+                )
+
+                if (morphResult != null) return@withContext morphResult
+                if (attempt < maxAttempts) Log.d(TAG, "Retrying VLM generation...")
+            }
+
+            MorphResult(
+                parameters = currentParameters,
+                generationTimeMs = System.currentTimeMillis() - startTime,
+                tokensGenerated = 0,
+                success = false,
+                errorMessage = lastError ?: "Generation failed after $maxAttempts attempts"
             )
         } catch (e: Exception) {
             Log.e(TAG, "Unexpected error", e)
