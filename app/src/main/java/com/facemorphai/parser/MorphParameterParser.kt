@@ -37,35 +37,87 @@ class MorphParameterParser {
 
     /**
      * Parse LLM output into MorphParameters.
+     * Enhanced with multiple extraction strategies for robustness.
      */
     fun parse(llmOutput: String): Result<MorphParameters> {
         Log.d(TAG, "RAW AI OUTPUT: \"$llmOutput\"")
 
+        // Strategy 1: Find JSON boundaries
         val firstBrace = llmOutput.indexOf('{')
         val lastBrace = llmOutput.lastIndexOf('}')
 
         if (firstBrace == -1 || lastBrace == -1 || lastBrace <= firstBrace) {
             Log.e(TAG, "No valid JSON boundaries found")
-            return Result.failure(Exception("No valid JSON object found in AI response"))
+            // Strategy 2: Try manual extraction as fallback
+            val fallbackParams = extractKeyValuesManually(llmOutput)
+            return if (fallbackParams.isNotEmpty()) {
+                Log.d(TAG, "Recovered ${fallbackParams.size} params via manual extraction")
+                Result.success(fromMap(fallbackParams))
+            } else {
+                Result.failure(Exception("No valid JSON object found in AI response"))
+            }
         }
 
         val rawJson = llmOutput.substring(firstBrace, lastBrace + 1)
 
+        // Strategy 3: Find the FIRST complete JSON object (in case of multiple or broken JSON)
+        val cleanJson = extractFirstCompleteJson(rawJson)
+
         return try {
-            val jsonString = repairJson(rawJson)
+            val jsonString = repairJson(cleanJson)
             val jsonObject = json.parseToJsonElement(jsonString) as? JsonObject
                 ?: return Result.failure(Exception("Extracted text is not a valid JSON object"))
 
             val params = parseJsonObject(jsonObject)
+            if (params.values.isEmpty()) {
+                Log.w(TAG, "JSON parsed but no valid parameters found, trying manual extraction")
+                val fallbackParams = extractKeyValuesManually(rawJson)
+                if (fallbackParams.isNotEmpty()) {
+                    return Result.success(fromMap(fallbackParams))
+                }
+            }
             Result.success(params)
         } catch (e: Exception) {
             Log.e(TAG, "JSON parsing failed, trying fallback extraction", e)
             val fallbackParams = extractKeyValuesManually(rawJson)
             if (fallbackParams.isNotEmpty()) {
+                Log.d(TAG, "Recovered ${fallbackParams.size} params via fallback")
                 Result.success(fromMap(fallbackParams))
             } else {
                 Result.failure(Exception("Failed to parse JSON: ${e.message}"))
             }
+        }
+    }
+
+    /**
+     * Extract the first complete JSON object from potentially mixed content.
+     * Handles cases like: "Here's the result: {...} I hope this helps!"
+     */
+    private fun extractFirstCompleteJson(text: String): String {
+        var braceDepth = 0
+        var startIdx = -1
+        var endIdx = -1
+
+        for (i in text.indices) {
+            when (text[i]) {
+                '{' -> {
+                    if (braceDepth == 0) startIdx = i
+                    braceDepth++
+                }
+                '}' -> {
+                    braceDepth--
+                    if (braceDepth == 0 && startIdx != -1) {
+                        endIdx = i
+                        break
+                    }
+                }
+            }
+        }
+
+        return if (startIdx != -1 && endIdx != -1 && endIdx > startIdx) {
+            text.substring(startIdx, endIdx + 1)
+        } else {
+            text
         }
     }
 
@@ -139,15 +191,34 @@ class MorphParameterParser {
 
     private fun extractKeyValuesManually(text: String): Map<String, Float> {
         val params = mutableMapOf<String, Float>()
-        // Match double-quoted, single-quoted, or unquoted keys with numeric values
-        val pattern = Regex("""(?:["']([^"']+)["']|([a-zA-Z_][a-zA-Z0-9_]*))\s*:\s*(-?\d+\.?\d*)""")
-        pattern.findAll(text).forEach { match ->
+
+        // Strategy 1: Match standard JSON key-value pairs
+        // Matches: "key":0.5, 'key':0.5, key:0.5
+        val standardPattern = Regex("""(?:["']([^"']+)["']|([a-zA-Z_][a-zA-Z0-9_]*))\s*:\s*(-?\d+\.?\d*)""")
+        standardPattern.findAll(text).forEach { match ->
             val key = normalizeKey(match.groupValues[1].ifEmpty { match.groupValues[2] })
             val value = match.groupValues[3].toFloatOrNull() ?: return@forEach
             if (isValidParam(key)) {
                 params[key] = value.coerceIn(0.0f, 1.0f)
+                Log.d(TAG, "Extracted: $key = $value")
             }
         }
+
+        // Strategy 2: If validParams is set, look for any mention of param names followed by numbers
+        // This catches cases like: "set eyeBlink_L to 0.6" or "eyeBlink_R = 0.5"
+        if (params.isEmpty() && validParams.isNotEmpty()) {
+            validParams.forEach { paramName ->
+                val escapedName = Regex.escape(paramName)
+                val mentionPattern = Regex("""$escapedName\D+?(\d+\.?\d*)""", RegexOption.IGNORE_CASE)
+                mentionPattern.find(text)?.let { match ->
+                    match.groupValues[1].toFloatOrNull()?.let { value ->
+                        params[paramName] = value.coerceIn(0.0f, 1.0f)
+                        Log.d(TAG, "Recovered from mention: $paramName = $value")
+                    }
+                }
+            }
+        }
+
         return params
     }
 

@@ -22,15 +22,21 @@ class FaceMorphService(private val context: Context) {
 
         private fun buildSystemPrompt(blendShapeNames: List<String>): String {
             val namesList = blendShapeNames.joinToString(", ")
+            val exampleKey = blendShapeNames.firstOrNull() ?: "shape_name"
             return """
-Output ONLY a JSON object. No markdown, no text, no explanation.
-Values: 0.0-1.0 (0.0=no change, 0.5=moderate, 1.0=maximum effect).
+CRITICAL: Output ONLY raw JSON. No text before or after. No markdown. No explanation. No comments.
 
-Available shape keys: $namesList
+Rules:
+- Values: 0.0 to 1.0 (0.0=no change, 1.0=maximum)
+- Only modify requested features
+- Keep other features at their current values
 
-Example input: "make eyes bigger"
-Example output: {"${blendShapeNames.firstOrNull() ?: "shape_name"}":0.6}
+Available keys: $namesList
 
+Format (STRICT):
+{"$exampleKey":0.6}
+
+DO NOT write anything except the JSON object.
 """.trimIndent()
         }
 
@@ -89,27 +95,53 @@ Example output: {"${blendShapeNames.firstOrNull() ?: "shape_name"}":0.6}
 
         val systemPrompt = buildSystemPrompt(blendShapeNames)
         val regionalInstruction = getRegionalPrompt(request.region, blendShapeNames)
-        val currentState = parser.toJson(currentParameters)
-        val stateClause = if (currentState != "{}") "\nCurrent face state: $currentState" else ""
-        val fullPrompt = "$systemPrompt$stateClause\nRequest: ${request.prompt}\nRegion Focus: $regionalInstruction\nOutput JSON:"
 
-        Log.d(TAG, "Sending prompt to VLM: $fullPrompt")
+        // Simplify current state presentation to reduce prompt complexity
+        val nonDefaults = currentParameters.getNonDefaultParameters()
+        val stateClause = if (nonDefaults.isNotEmpty()) {
+            val simplified = nonDefaults.entries.take(5).joinToString(", ") { "${it.key}:${it.value}" }
+            val more = if (nonDefaults.size > 5) " +${nonDefaults.size - 5} more" else ""
+            "\nActive: $simplified$more"
+        } else {
+            ""
+        }
+
+        val fullPrompt = """
+$systemPrompt$stateClause
+
+Task: ${request.prompt}
+Focus: $regionalInstruction
+
+Output:""".trimIndent()
+
+        Log.d(TAG, "=== VLM REQUEST (Attempt 1) ===")
+        Log.d(TAG, "Prompt length: ${fullPrompt.length} chars")
+        Log.d(TAG, "Full prompt:\n$fullPrompt")
+        Log.d(TAG, "================================")
 
         try {
             val maxAttempts = 2
             var lastError: String? = null
 
             for (attempt in 1..maxAttempts) {
+                if (attempt > 1) {
+                    Log.d(TAG, "=== RETRY ATTEMPT $attempt ===")
+                }
                 val result = nexaService.generate(prompt = fullPrompt, maxTokens = 256)
 
                 val morphResult = result.fold(
                     onSuccess = { jsonOutput ->
+                        Log.d(TAG, "VLM response received (${jsonOutput.length} chars)")
+                        Log.d(TAG, "VLM output: \"$jsonOutput\"")
+
                         val parseResult = parser.parse(jsonOutput)
 
                         parseResult.fold(
                             onSuccess = { newParams ->
+                                Log.d(TAG, "Successfully parsed ${newParams.values.size} parameters")
                                 val scaledParams = applyIntensity(newParams, request.intensity)
                                 currentParameters = currentParameters.mergeWith(scaledParams)
+                                Log.d(TAG, "Cumulative parameters now: ${currentParameters.values.size} active")
                                 MorphResult(
                                     parameters = currentParameters,
                                     generationTimeMs = System.currentTimeMillis() - startTime,
@@ -119,6 +151,7 @@ Example output: {"${blendShapeNames.firstOrNull() ?: "shape_name"}":0.6}
                             },
                             onFailure = { parseError ->
                                 Log.e(TAG, "Parse error (attempt $attempt/$maxAttempts): ${parseError.message}")
+                                Log.e(TAG, "Failed output was: \"$jsonOutput\"")
                                 lastError = "VLM output was not valid JSON: ${parseError.message}"
                                 null // signal retry
                             }
