@@ -2,6 +2,7 @@ package com.facemorphai.service
 
 import android.content.Context
 import android.util.Log
+import com.facemorphai.logging.VlmLogManager
 import com.facemorphai.model.FaceRegion
 import com.facemorphai.model.MorphParameters
 import com.facemorphai.model.MorphRequest
@@ -127,7 +128,9 @@ Output:""".trimIndent()
                 if (attempt > 1) {
                     Log.d(TAG, "=== RETRY ATTEMPT $attempt ===")
                 }
+                val attemptStartTime = System.currentTimeMillis()
                 val result = nexaService.generate(prompt = fullPrompt, maxTokens = 256)
+                val attemptDuration = System.currentTimeMillis() - attemptStartTime
 
                 val morphResult = result.fold(
                     onSuccess = { jsonOutput ->
@@ -139,6 +142,16 @@ Output:""".trimIndent()
                         parseResult.fold(
                             onSuccess = { newParams ->
                                 Log.d(TAG, "Successfully parsed ${newParams.values.size} parameters")
+                                // Log successful interaction
+                                VlmLogManager.logVlmInteraction(
+                                    prompt = fullPrompt,
+                                    vlmOutput = jsonOutput,
+                                    parseSuccess = true,
+                                    parseError = null,
+                                    parsedParamCount = newParams.values.size,
+                                    generationTimeMs = attemptDuration,
+                                    attempt = attempt
+                                )
                                 val scaledParams = applyIntensity(newParams, request.intensity)
                                 currentParameters = currentParameters.mergeWith(scaledParams)
                                 Log.d(TAG, "Cumulative parameters now: ${currentParameters.values.size} active")
@@ -152,6 +165,16 @@ Output:""".trimIndent()
                             onFailure = { parseError ->
                                 Log.e(TAG, "Parse error (attempt $attempt/$maxAttempts): ${parseError.message}")
                                 Log.e(TAG, "Failed output was: \"$jsonOutput\"")
+                                // Log failed parse interaction
+                                VlmLogManager.logVlmInteraction(
+                                    prompt = fullPrompt,
+                                    vlmOutput = jsonOutput,
+                                    parseSuccess = false,
+                                    parseError = parseError.message,
+                                    parsedParamCount = null,
+                                    generationTimeMs = attemptDuration,
+                                    attempt = attempt
+                                )
                                 lastError = "VLM output was not valid JSON: ${parseError.message}"
                                 null // signal retry
                             }
@@ -159,6 +182,16 @@ Output:""".trimIndent()
                     },
                     onFailure = { error ->
                         Log.e(TAG, "Generation error (attempt $attempt/$maxAttempts): ${error.message}")
+                        // Log generation failure
+                        VlmLogManager.logVlmInteraction(
+                            prompt = fullPrompt,
+                            vlmOutput = null,
+                            parseSuccess = false,
+                            parseError = "Generation failed: ${error.message}",
+                            parsedParamCount = null,
+                            generationTimeMs = attemptDuration,
+                            attempt = attempt
+                        )
                         lastError = "VLM failed: ${error.message}"
                         null // signal retry
                     }

@@ -1,5 +1,8 @@
 package com.facemorphai
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.os.Bundle
 import android.util.Log
 import android.webkit.WebView
@@ -12,6 +15,8 @@ import androidx.compose.animation.core.*
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -27,16 +32,21 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.lifecycleScope
 import com.facemorphai.bridge.WebViewBridge
+import com.facemorphai.logging.VlmLogManager
 import com.facemorphai.model.FaceRegion
 import com.facemorphai.model.MorphRequest
 import com.facemorphai.service.FaceMorphService
@@ -96,6 +106,7 @@ class MainActivity : ComponentActivity() {
 
         var isModelLoading by remember { mutableStateOf(false) }
         var isModelReady by remember { mutableStateOf(false) }
+        var showLogDialog by remember { mutableStateOf(false) }
 
         val context = LocalContext.current
 
@@ -171,36 +182,74 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                     
-                    // AI Pulse Status
-                    Surface(
-                        color = if (isModelReady) primaryPurple.copy(alpha = 0.12f) else Color.White.copy(alpha = 0.05f),
-                        shape = RoundedCornerShape(12.dp),
-                        border = BorderStroke(1.dp, if (isModelReady) primaryPurple.copy(alpha = 0.4f) else Color.White.copy(alpha = 0.1f))
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                        // Log Button
+                        val logCount = VlmLogManager.getLogCount()
+                        val failureCount = VlmLogManager.getFailureCount()
+                        Surface(
+                            onClick = { showLogDialog = true },
+                            color = if (failureCount > 0) Color(0xFF7F1D1D).copy(alpha = 0.3f) else Color.White.copy(alpha = 0.05f),
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, if (failureCount > 0) Color(0xFFEF4444).copy(alpha = 0.4f) else Color.White.copy(alpha = 0.1f))
                         ) {
-                            if (isModelReady) {
-                                val infiniteTransition = rememberInfiniteTransition()
-                                val scale by infiniteTransition.animateFloat(
-                                    initialValue = 0.8f, targetValue = 1.2f,
-                                    animationSpec = infiniteRepeatable(tween(1000), RepeatMode.Reverse)
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "LOG",
+                                    style = TextStyle(fontFamily = techFont, fontSize = 9.sp, fontWeight = FontWeight.Bold, color = Color.White)
                                 )
-                                Box(
-                                    modifier = Modifier
-                                        .size(8.dp)
-                                        .graphicsLayer { scaleX = scale; scaleY = scale }
-                                        .background(primaryPurple, CircleShape)
-                                )
-                            } else {
-                                Box(modifier = Modifier.size(8.dp).background(Color.Gray.copy(alpha = 0.5f), CircleShape))
+                                if (logCount > 0) {
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Surface(
+                                        color = if (failureCount > 0) Color(0xFFEF4444) else primaryPurple,
+                                        shape = CircleShape
+                                    ) {
+                                        Text(
+                                            text = "$logCount",
+                                            style = TextStyle(fontFamily = techFont, fontSize = 8.sp, fontWeight = FontWeight.Bold, color = Color.White),
+                                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
                             }
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = if (isModelReady) "CORE ACTIVE" else "STBY",
-                                style = TextStyle(fontFamily = techFont, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                            )
+                        }
+
+                        // AI Pulse Status
+                        Surface(
+                            color = if (isModelReady) primaryPurple.copy(alpha = 0.12f) else Color.White.copy(alpha = 0.05f),
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, if (isModelReady) primaryPurple.copy(alpha = 0.4f) else Color.White.copy(alpha = 0.1f))
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                if (isModelReady) {
+                                    val infiniteTransition = rememberInfiniteTransition()
+                                    val scale by infiniteTransition.animateFloat(
+                                        initialValue = 0.8f, targetValue = 1.2f,
+                                        animationSpec = infiniteRepeatable(tween(1000), RepeatMode.Reverse)
+                                    )
+                                    Box(
+                                        modifier = Modifier
+                                            .size(8.dp)
+                                            .graphicsLayer { scaleX = scale; scaleY = scale }
+                                            .background(primaryPurple, CircleShape)
+                                    )
+                                } else {
+                                    Box(modifier = Modifier.size(8.dp).background(Color.Gray.copy(alpha = 0.5f), CircleShape))
+                                }
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = if (isModelReady) "CORE ACTIVE" else "STBY",
+                                    style = TextStyle(fontFamily = techFont, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                )
+                            }
                         }
                     }
                 }
@@ -474,6 +523,320 @@ class MainActivity : ComponentActivity() {
                                     }
                                 }
                             }
+                        }
+                    }
+                }
+            }
+
+            // Log Dialog
+            if (showLogDialog) {
+                VlmLogDialog(
+                    onDismiss = { showLogDialog = false },
+                    primaryPurple = primaryPurple,
+                    accentPurple = accentPurple,
+                    surfacePurple = surfacePurple,
+                    techFont = techFont
+                )
+            }
+        }
+    }
+
+    @Composable
+    fun VlmLogDialog(
+        onDismiss: () -> Unit,
+        primaryPurple: Color,
+        accentPurple: Color,
+        surfacePurple: Color,
+        techFont: FontFamily
+    ) {
+        val clipboardManager = LocalClipboardManager.current
+        val context = LocalContext.current
+        var logs by remember { mutableStateOf(VlmLogManager.getLogsReversed()) }
+        var expandedLogIndex by remember { mutableStateOf<Int?>(null) }
+
+        Dialog(
+            onDismissRequest = onDismiss,
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth(0.95f)
+                    .fillMaxHeight(0.85f)
+                    .padding(8.dp),
+                shape = RoundedCornerShape(24.dp),
+                colors = CardDefaults.cardColors(containerColor = surfacePurple)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(16.dp)
+                ) {
+                    // Header
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text(
+                                text = "VLM DEBUG LOGS",
+                                style = TextStyle(
+                                    fontFamily = techFont,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 16.sp,
+                                    color = Color.White,
+                                    letterSpacing = 1.sp
+                                )
+                            )
+                            Text(
+                                text = "${VlmLogManager.getSuccessCount()} success / ${VlmLogManager.getFailureCount()} failed",
+                                style = TextStyle(
+                                    fontFamily = techFont,
+                                    fontSize = 10.sp,
+                                    color = accentPurple.copy(alpha = 0.7f)
+                                )
+                            )
+                        }
+
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            // Copy All Button
+                            Surface(
+                                onClick = {
+                                    val exportText = VlmLogManager.exportLogsAsText()
+                                    clipboardManager.setText(AnnotatedString(exportText))
+                                    Toast.makeText(context, "Logs copied to clipboard", Toast.LENGTH_SHORT).show()
+                                },
+                                color = primaryPurple.copy(alpha = 0.2f),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text(
+                                    text = "COPY ALL",
+                                    style = TextStyle(fontFamily = techFont, fontSize = 9.sp, fontWeight = FontWeight.Bold, color = Color.White),
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                )
+                            }
+
+                            // Clear Button
+                            Surface(
+                                onClick = {
+                                    VlmLogManager.clearLogs()
+                                    logs = VlmLogManager.getLogsReversed()
+                                },
+                                color = Color(0xFF7F1D1D).copy(alpha = 0.3f),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text(
+                                    text = "CLEAR",
+                                    style = TextStyle(fontFamily = techFont, fontSize = 9.sp, fontWeight = FontWeight.Bold, color = Color(0xFFEF4444)),
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                )
+                            }
+
+                            // Close Button
+                            Surface(
+                                onClick = onDismiss,
+                                color = Color.White.copy(alpha = 0.1f),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text(
+                                    text = "✕",
+                                    style = TextStyle(fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color.White),
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // Log List
+                    if (logs.isEmpty()) {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "No VLM logs yet.\nTry executing a morph to see logs here.",
+                                style = TextStyle(
+                                    fontFamily = techFont,
+                                    fontSize = 12.sp,
+                                    color = Color.White.copy(alpha = 0.4f)
+                                )
+                            )
+                        }
+                    } else {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .verticalScroll(rememberScrollState()),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            logs.forEachIndexed { index, log ->
+                                val isExpanded = expandedLogIndex == index
+                                LogEntryCard(
+                                    log = log,
+                                    isExpanded = isExpanded,
+                                    onToggle = { expandedLogIndex = if (isExpanded) null else index },
+                                    onCopy = {
+                                        clipboardManager.setText(AnnotatedString(log.toDebugString()))
+                                        Toast.makeText(context, "Log entry copied", Toast.LENGTH_SHORT).show()
+                                    },
+                                    primaryPurple = primaryPurple,
+                                    techFont = techFont
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Composable
+    fun LogEntryCard(
+        log: VlmLogManager.VlmLogEntry,
+        isExpanded: Boolean,
+        onToggle: () -> Unit,
+        onCopy: () -> Unit,
+        primaryPurple: Color,
+        techFont: FontFamily
+    ) {
+        val statusColor = if (log.parseSuccess) Color(0xFF22C55E) else Color(0xFFEF4444)
+        val statusBgColor = if (log.parseSuccess) Color(0xFF14532D).copy(alpha = 0.3f) else Color(0xFF7F1D1D).copy(alpha = 0.3f)
+
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onToggle() },
+            shape = RoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(containerColor = Color.Black.copy(alpha = 0.3f)),
+            border = BorderStroke(1.dp, statusColor.copy(alpha = 0.3f))
+        ) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                // Header Row
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // Status Badge
+                        Surface(color = statusBgColor, shape = RoundedCornerShape(4.dp)) {
+                            Text(
+                                text = if (log.parseSuccess) "✓" else "✗",
+                                style = TextStyle(fontSize = 10.sp, fontWeight = FontWeight.Bold, color = statusColor),
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                        Text(
+                            text = "#${log.requestNumber}",
+                            style = TextStyle(fontFamily = techFont, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                        )
+                        Text(
+                            text = "Attempt ${log.attempt}",
+                            style = TextStyle(fontFamily = techFont, fontSize = 10.sp, color = Color.White.copy(alpha = 0.5f))
+                        )
+                    }
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = log.getFormattedTime(),
+                            style = TextStyle(fontFamily = techFont, fontSize = 10.sp, color = Color.White.copy(alpha = 0.5f))
+                        )
+                        Text(
+                            text = "${log.generationTimeMs}ms",
+                            style = TextStyle(fontFamily = techFont, fontSize = 10.sp, color = primaryPurple)
+                        )
+                    }
+                }
+
+                // Summary
+                Spacer(modifier = Modifier.height(8.dp))
+                if (log.parseSuccess) {
+                    Text(
+                        text = "Parsed ${log.parsedParamCount} parameters",
+                        style = TextStyle(fontFamily = techFont, fontSize = 11.sp, color = Color(0xFF22C55E))
+                    )
+                } else {
+                    Text(
+                        text = log.parseError ?: "Unknown error",
+                        style = TextStyle(fontFamily = techFont, fontSize = 11.sp, color = Color(0xFFEF4444)),
+                        maxLines = if (isExpanded) Int.MAX_VALUE else 1
+                    )
+                }
+
+                // Expanded Details
+                if (isExpanded) {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    HorizontalDivider(color = Color.White.copy(alpha = 0.1f))
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // VLM Raw Output Section
+                    Text(
+                        text = "VLM RAW OUTPUT (${log.vlmOutputLength ?: 0} chars):",
+                        style = TextStyle(fontFamily = techFont, fontSize = 9.sp, fontWeight = FontWeight.Bold, color = Color.White.copy(alpha = 0.6f))
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = Color.Black.copy(alpha = 0.4f),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text(
+                            text = log.vlmRawOutput ?: "<null>",
+                            style = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 10.sp, color = Color(0xFFFBBF24)),
+                            modifier = Modifier
+                                .padding(8.dp)
+                                .horizontalScroll(rememberScrollState())
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Prompt Section
+                    Text(
+                        text = "PROMPT (${log.promptLength} chars):",
+                        style = TextStyle(fontFamily = techFont, fontSize = 9.sp, fontWeight = FontWeight.Bold, color = Color.White.copy(alpha = 0.6f))
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 150.dp),
+                        color = Color.Black.copy(alpha = 0.4f),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text(
+                            text = log.prompt,
+                            style = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 9.sp, color = Color.White.copy(alpha = 0.8f)),
+                            modifier = Modifier
+                                .padding(8.dp)
+                                .verticalScroll(rememberScrollState())
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Copy Button
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        Surface(
+                            onClick = onCopy,
+                            color = primaryPurple.copy(alpha = 0.2f),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text(
+                                text = "COPY ENTRY",
+                                style = TextStyle(fontFamily = techFont, fontSize = 9.sp, fontWeight = FontWeight.Bold, color = Color.White),
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                            )
                         }
                     }
                 }
