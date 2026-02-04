@@ -9,6 +9,7 @@ import com.facemorphai.model.MorphRequest
 import com.facemorphai.model.MorphResult
 import com.facemorphai.parser.MorphParameterParser
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
 /**
@@ -41,25 +42,39 @@ DO NOT write anything except the JSON object.
 """.trimIndent()
         }
 
-        private fun getRegionalPrompt(region: FaceRegion, blendShapeNames: List<String>): String {
+        private fun getRegionalPrompt(
+            region: FaceRegion,
+            blendShapeNames: List<String>,
+            categorizer: BlendshapeCategorizer?
+        ): String {
             if (region == FaceRegion.ALL) {
                 return "You may modify any shape keys to achieve the look."
             }
-            val matching = blendShapeNames.filter { region.matchesBlendShape(it) }
+
+            // Use VLM-categorized mapping if available, otherwise fall back to keyword matching
+            val matching = if (categorizer != null && categorizer.getCachedMapping().isNotEmpty()) {
+                categorizer.getBlendshapesForRegion(region)
+            } else {
+                blendShapeNames.filter { region.matchesBlendShape(it) }
+            }
+
             return if (matching.isNotEmpty()) {
                 "Focus ONLY on these shape keys: ${matching.joinToString(", ")}"
             } else {
-                "Focus on shape keys related to: ${region.displayName}"
+                // No blendshapes for this region - tell VLM to use available shapes creatively
+                "No dedicated ${region.displayName} controls exist. Use available shape keys creatively to approximate the effect. ONLY use keys from the Available keys list above."
             }
         }
     }
 
     private val nexaService = NexaService.getInstance(context)
+    private val categorizer = BlendshapeCategorizer(nexaService)
     val parser = MorphParameterParser()
 
     private var currentParameters = MorphParameters.DEFAULT
     private var useMockMode = false
     private var blendShapeNames: List<String> = emptyList()
+    private var categorizationPending = false
 
     fun setMockMode(enabled: Boolean) {
         useMockMode = enabled
@@ -67,13 +82,32 @@ DO NOT write anything except the JSON object.
 
     /**
      * Update the available blendshape names from the loaded FBX model.
-     * This rebuilds the AI prompt to use the actual shape key names.
+     * This triggers VLM-based categorization of the blendshapes.
      */
     fun updateBlendShapeNames(names: List<String>) {
         blendShapeNames = names
         parser.updateValidParams(names)
+        // Mark that we need to categorize these blendshapes
+        if (!categorizer.hasCachedMapping(names)) {
+            categorizationPending = true
+        }
         Log.d(TAG, "BlendShape names updated: ${names.size} shapes")
     }
+
+    /**
+     * Categorize blendshapes using the VLM.
+     * Should be called after model is loaded and VLM is ready.
+     */
+    suspend fun categorizeBlendshapes(): Map<FaceRegion, List<String>> {
+        if (blendShapeNames.isEmpty()) return emptyMap()
+        categorizationPending = false
+        return categorizer.categorize(blendShapeNames)
+    }
+
+    /**
+     * Get the categorizer for UI access to region mappings.
+     */
+    fun getCategorizer(): BlendshapeCategorizer = categorizer
 
     fun getBlendShapeNames(): List<String> = blendShapeNames
 
@@ -95,7 +129,7 @@ DO NOT write anything except the JSON object.
         }
 
         val systemPrompt = buildSystemPrompt(blendShapeNames)
-        val regionalInstruction = getRegionalPrompt(request.region, blendShapeNames)
+        val regionalInstruction = getRegionalPrompt(request.region, blendShapeNames, categorizer)
 
         // Simplify current state presentation to reduce prompt complexity
         val nonDefaults = currentParameters.getNonDefaultParameters()
@@ -205,7 +239,10 @@ Output:""".trimIndent()
                 )
 
                 if (morphResult != null) return@withContext morphResult
-                if (attempt < maxAttempts) Log.d(TAG, "Retrying VLM generation...")
+                if (attempt < maxAttempts) {
+                    Log.d(TAG, "Retrying VLM generation after delay...")
+                    delay(500) // Give the model time to reset before retry
+                }
             }
 
             MorphResult(

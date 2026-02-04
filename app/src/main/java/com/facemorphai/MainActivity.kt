@@ -338,7 +338,14 @@ class MainActivity : ComponentActivity() {
                                                         val manifestFile = File(modelDownloader.getModelPath(), "nexa.manifest")
                                                         nexaService.loadModel(manifestFile.absolutePath, preferNpu = true,
                                                             callback = object : NexaService.ModelLoadCallback {
-                                                                override fun onSuccess() { isModelLoading = false; isModelReady = true }
+                                                                override fun onSuccess() {
+                                                                    isModelLoading = false
+                                                                    isModelReady = true
+                                                                    // Trigger VLM-based blendshape categorization
+                                                                    lifecycleScope.launch {
+                                                                        faceMorphService.categorizeBlendshapes()
+                                                                    }
+                                                                }
                                                                 override fun onFailure(reason: String) {
                                                                     isModelLoading = false
                                                                     lifecycleScope.launch(Dispatchers.Main) { Toast.makeText(context, "Link Fail: $reason", Toast.LENGTH_SHORT).show() }

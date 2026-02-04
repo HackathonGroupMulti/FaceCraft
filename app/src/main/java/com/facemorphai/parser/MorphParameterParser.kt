@@ -35,6 +35,14 @@ class MorphParameterParser {
         coerceInputValues = true
     }
 
+    // Pre-compile regex patterns to avoid runtime compilation issues
+    private val commentRegex = Regex("//[^\n]*")
+    private val singleQuoteKeyRegex = Regex("'([^']*)'\\s*:")
+    private val singleQuoteValueRegex = Regex(":\\s*'([^']*)'")
+    private val unquotedKeyRegex = Regex("""(?<=\{|,)\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:""")
+    private val trailingCommaRegex = Regex(",\\s*\\}")
+    private val keyValueRegex = Regex(""""([^"]+)"\s*:\s*(-?\d+\.?\d*)""")
+
     /**
      * Parse LLM output into MorphParameters.
      * Enhanced with multiple extraction strategies for robustness.
@@ -171,20 +179,25 @@ class MorphParameterParser {
     private fun repairJson(raw: String): String {
         var repaired = raw.trim()
 
-        // Strip JavaScript-style line comments
-        repaired = repaired.replace(Regex("//[^\n]*"), "")
+        try {
+            // Strip JavaScript-style line comments
+            repaired = commentRegex.replace(repaired, "")
 
-        // Replace single quotes with double quotes for keys and string values
-        repaired = repaired.replace(Regex("'([^']*)'\\s*:")) { "\"${it.groupValues[1]}\":" }
-        repaired = repaired.replace(Regex(":\\s*'([^']*)'")) { ": \"${it.groupValues[1]}\"" }
+            // Replace single quotes with double quotes for keys and string values
+            repaired = singleQuoteKeyRegex.replace(repaired) { "\"${it.groupValues[1]}\":" }
+            repaired = singleQuoteValueRegex.replace(repaired) { ": \"${it.groupValues[1]}\"" }
 
-        // Quote unquoted keys: { key: 0.5 } → { "key": 0.5 }
-        repaired = repaired.replace(Regex("""(?<=\{|,)\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:""")) {
-            " \"${it.groupValues[1]}\":"
+            // Quote unquoted keys: { key: 0.5 } → { "key": 0.5 }
+            repaired = unquotedKeyRegex.replace(repaired) { " \"${it.groupValues[1]}\":" }
+
+            // Remove trailing commas before } (using simple string replacement as fallback)
+            repaired = trailingCommaRegex.replace(repaired, "}")
+        } catch (e: Exception) {
+            Log.w(TAG, "Regex repair failed, using fallback: ${e.message}")
+            // Fallback: simple string-based cleanup
+            repaired = repaired.replace(",}", "}")
+            repaired = repaired.replace(", }", "}")
         }
-
-        // Remove trailing commas before }
-        repaired = repaired.replace(Regex(""",\s*}"""), "}")
 
         return repaired.trim()
     }
@@ -192,31 +205,36 @@ class MorphParameterParser {
     private fun extractKeyValuesManually(text: String): Map<String, Float> {
         val params = mutableMapOf<String, Float>()
 
-        // Strategy 1: Match standard JSON key-value pairs
-        // Matches: "key":0.5, 'key':0.5, key:0.5
-        val standardPattern = Regex("""(?:["']([^"']+)["']|([a-zA-Z_][a-zA-Z0-9_]*))\s*:\s*(-?\d+\.?\d*)""")
-        standardPattern.findAll(text).forEach { match ->
-            val key = normalizeKey(match.groupValues[1].ifEmpty { match.groupValues[2] })
-            val value = match.groupValues[3].toFloatOrNull() ?: return@forEach
-            if (isValidParam(key)) {
-                params[key] = value.coerceIn(0.0f, 1.0f)
-                Log.d(TAG, "Extracted: $key = $value")
+        try {
+            // Strategy 1: Use pre-compiled regex for "key": value pairs
+            keyValueRegex.findAll(text).forEach { match ->
+                val key = normalizeKey(match.groupValues[1])
+                val value = match.groupValues[2].toFloatOrNull() ?: return@forEach
+                if (isValidParam(key)) {
+                    params[key] = value.coerceIn(0.0f, 1.0f)
+                    Log.d(TAG, "Extracted: $key = $value")
+                }
             }
-        }
 
-        // Strategy 2: If validParams is set, look for any mention of param names followed by numbers
-        // This catches cases like: "set eyeBlink_L to 0.6" or "eyeBlink_R = 0.5"
-        if (params.isEmpty() && validParams.isNotEmpty()) {
-            validParams.forEach { paramName ->
-                val escapedName = Regex.escape(paramName)
-                val mentionPattern = Regex("""$escapedName\D+?(\d+\.?\d*)""", RegexOption.IGNORE_CASE)
-                mentionPattern.find(text)?.let { match ->
-                    match.groupValues[1].toFloatOrNull()?.let { value ->
-                        params[paramName] = value.coerceIn(0.0f, 1.0f)
-                        Log.d(TAG, "Recovered from mention: $paramName = $value")
+            // Strategy 2: If validParams is set, look for any mention of param names followed by numbers
+            if (params.isEmpty() && validParams.isNotEmpty()) {
+                validParams.forEach { paramName ->
+                    try {
+                        val escapedName = Regex.escape(paramName)
+                        val mentionPattern = Regex("""$escapedName\D+?(\d+\.?\d*)""", RegexOption.IGNORE_CASE)
+                        mentionPattern.find(text)?.let { match ->
+                            match.groupValues[1].toFloatOrNull()?.let { value ->
+                                params[paramName] = value.coerceIn(0.0f, 1.0f)
+                                Log.d(TAG, "Recovered from mention: $paramName = $value")
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Regex failed for param $paramName: ${e.message}")
                     }
                 }
             }
+        } catch (e: Exception) {
+            Log.e(TAG, "Manual extraction failed: ${e.message}")
         }
 
         return params
