@@ -176,6 +176,9 @@ class NexaService private constructor(context: Context) {
             }
     }
 
+    // Track generation count for debugging
+    private var generationCount = 0
+
     /**
      * Correctly extract text from the Nexa SDK response.
      * The SDK returns objects like Token(text="...") and Completed(profile=...).
@@ -187,63 +190,112 @@ class NexaService private constructor(context: Context) {
             return@flow
         }
 
+        generationCount++
+        val currentGeneration = generationCount
+        Log.d(TAG, "=== GENERATION #$currentGeneration START ===")
+        Log.d(TAG, "Prompt length: ${prompt.length} chars")
+
         try {
             val genConfig = GenerationConfig(
                 maxTokens = 512,
                 stopWords = null,
                 stopCount = 0,
-                nPast = 0,
+                nPast = 0,  // Should reset context, but may not work as expected
                 imagePaths = null,
                 imageCount = 0,
                 audioPaths = null,
                 audioCount = 0
             )
-            
+
+            var tokenCount = 0
+            var rawResultCount = 0
+
             wrapper.generateStreamFlow(prompt, genConfig)
                 .collect { result ->
+                    rawResultCount++
                     // The SDK result is an object. We extract the text property from its string representation.
                     val resultStr = result.toString()
-                    
+
+                    // Log every raw result for debugging
+                    Log.d(TAG, "Gen#$currentGeneration Raw[$rawResultCount]: $resultStr")
+
                     if (resultStr.contains("text=")) {
                         // Surgically extract text content: finds "text=" and grabs until the closing part
                         val start = resultStr.indexOf("text=") + 5
                         var end = resultStr.indexOf(")", start)
                         val comma = resultStr.indexOf(",", start)
-                        
+
                         // Handle cases where comma comes before closing parenthesis
                         if (comma in (start + 1)..<end) {
                             end = comma
                         }
-                        
+
                         if (start > 4 && end > start) {
                             val text = resultStr.substring(start, end)
+                            tokenCount++
+                            Log.d(TAG, "Gen#$currentGeneration Token[$tokenCount]: '$text'")
                             emit(StreamResult.Token(text))
+                        } else {
+                            Log.w(TAG, "Gen#$currentGeneration: Failed to extract text from: $resultStr")
                         }
                     } else if (resultStr.startsWith("Completed")) {
+                        Log.d(TAG, "Gen#$currentGeneration: Completed after $tokenCount tokens")
                         emit(StreamResult.Completed(0, 0, 0, 0f))
+                    } else {
+                        Log.w(TAG, "Gen#$currentGeneration: Unknown result type: $resultStr")
                     }
                 }
+
+            Log.d(TAG, "=== GENERATION #$currentGeneration END: $tokenCount tokens from $rawResultCount raw results ===")
         } catch (e: Exception) {
+            Log.e(TAG, "Gen#$currentGeneration Exception: ${e.message}", e)
             emit(StreamResult.Error(e.message ?: "Generation failed"))
         }
     }
 
+    /**
+     * Result of a generation including debug stats.
+     */
+    data class GenerationResult(
+        val text: String,
+        val tokenCount: Int,
+        val rawResultCount: Int,
+        val rawResults: List<String>
+    )
+
     suspend fun generate(prompt: String, maxTokens: Int = 512): Result<String> {
+        val result = generateWithStats(prompt, maxTokens)
+        return result.map { it.text }
+    }
+
+    suspend fun generateWithStats(prompt: String, maxTokens: Int = 512): Result<GenerationResult> {
         val builder = StringBuilder()
         var error: String? = null
+        var tokenCount = 0
+        val rawResults = mutableListOf<String>()
 
         generateStream(prompt).collect { result ->
             when (result) {
-                is StreamResult.Token -> builder.append(result.text)
+                is StreamResult.Token -> {
+                    builder.append(result.text)
+                    tokenCount++
+                }
                 is StreamResult.Completed -> { }
                 is StreamResult.Error -> error = result.message
             }
+            // Capture raw result for debugging
+            rawResults.add(result.toString())
         }
 
         return if (error != null) {
             Result.failure(Exception(error))
         } else {
-            Result.success(builder.toString())
+            Result.success(GenerationResult(
+                text = builder.toString(),
+                tokenCount = tokenCount,
+                rawResultCount = rawResults.size,
+                rawResults = rawResults.takeLast(20) // Keep last 20 for debugging
+            ))
         }
     }
 

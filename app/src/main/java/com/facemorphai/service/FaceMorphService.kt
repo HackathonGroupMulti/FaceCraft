@@ -129,12 +129,13 @@ Output:""".trimIndent()
                     Log.d(TAG, "=== RETRY ATTEMPT $attempt ===")
                 }
                 val attemptStartTime = System.currentTimeMillis()
-                val result = nexaService.generate(prompt = fullPrompt, maxTokens = 256)
+                val result = nexaService.generateWithStats(prompt = fullPrompt, maxTokens = 256)
                 val attemptDuration = System.currentTimeMillis() - attemptStartTime
 
                 val morphResult = result.fold(
-                    onSuccess = { jsonOutput ->
-                        Log.d(TAG, "VLM response received (${jsonOutput.length} chars)")
+                    onSuccess = { genResult ->
+                        val jsonOutput = genResult.text
+                        Log.d(TAG, "VLM response received (${jsonOutput.length} chars, ${genResult.tokenCount} tokens)")
                         Log.d(TAG, "VLM output: \"$jsonOutput\"")
 
                         val parseResult = parser.parse(jsonOutput)
@@ -142,7 +143,7 @@ Output:""".trimIndent()
                         parseResult.fold(
                             onSuccess = { newParams ->
                                 Log.d(TAG, "Successfully parsed ${newParams.values.size} parameters")
-                                // Log successful interaction
+                                // Log successful interaction with stream stats
                                 VlmLogManager.logVlmInteraction(
                                     prompt = fullPrompt,
                                     vlmOutput = jsonOutput,
@@ -150,7 +151,9 @@ Output:""".trimIndent()
                                     parseError = null,
                                     parsedParamCount = newParams.values.size,
                                     generationTimeMs = attemptDuration,
-                                    attempt = attempt
+                                    attempt = attempt,
+                                    streamTokenCount = genResult.tokenCount,
+                                    streamRawResults = genResult.rawResults
                                 )
                                 val scaledParams = applyIntensity(newParams, request.intensity)
                                 currentParameters = currentParameters.mergeWith(scaledParams)
@@ -158,14 +161,14 @@ Output:""".trimIndent()
                                 MorphResult(
                                     parameters = currentParameters,
                                     generationTimeMs = System.currentTimeMillis() - startTime,
-                                    tokensGenerated = jsonOutput.length / 4,
+                                    tokensGenerated = genResult.tokenCount,
                                     success = true
                                 )
                             },
                             onFailure = { parseError ->
                                 Log.e(TAG, "Parse error (attempt $attempt/$maxAttempts): ${parseError.message}")
                                 Log.e(TAG, "Failed output was: \"$jsonOutput\"")
-                                // Log failed parse interaction
+                                // Log failed parse interaction with stream stats
                                 VlmLogManager.logVlmInteraction(
                                     prompt = fullPrompt,
                                     vlmOutput = jsonOutput,
@@ -173,7 +176,9 @@ Output:""".trimIndent()
                                     parseError = parseError.message,
                                     parsedParamCount = null,
                                     generationTimeMs = attemptDuration,
-                                    attempt = attempt
+                                    attempt = attempt,
+                                    streamTokenCount = genResult.tokenCount,
+                                    streamRawResults = genResult.rawResults
                                 )
                                 lastError = "VLM output was not valid JSON: ${parseError.message}"
                                 null // signal retry
@@ -190,7 +195,9 @@ Output:""".trimIndent()
                             parseError = "Generation failed: ${error.message}",
                             parsedParamCount = null,
                             generationTimeMs = attemptDuration,
-                            attempt = attempt
+                            attempt = attempt,
+                            streamTokenCount = 0,
+                            streamRawResults = null
                         )
                         lastError = "VLM failed: ${error.message}"
                         null // signal retry

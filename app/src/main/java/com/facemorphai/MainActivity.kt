@@ -776,6 +776,26 @@ class MainActivity : ComponentActivity() {
                     HorizontalDivider(color = Color.White.copy(alpha = 0.1f))
                     Spacer(modifier = Modifier.height(12.dp))
 
+                    // Stream Stats
+                    if (log.streamTokenCount != null) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            Text(
+                                text = "Stream tokens: ${log.streamTokenCount}",
+                                style = TextStyle(fontFamily = techFont, fontSize = 10.sp, color = if (log.streamTokenCount == 0) Color(0xFFEF4444) else Color(0xFF22C55E))
+                            )
+                            if (log.streamTokenCount == 0) {
+                                Text(
+                                    text = "MODEL RETURNED NO TOKENS",
+                                    style = TextStyle(fontFamily = techFont, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFFEF4444))
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                    }
+
                     // VLM Raw Output Section
                     Text(
                         text = "VLM RAW OUTPUT (${log.vlmOutputLength ?: 0} chars):",
@@ -787,13 +807,49 @@ class MainActivity : ComponentActivity() {
                         color = Color.Black.copy(alpha = 0.4f),
                         shape = RoundedCornerShape(8.dp)
                     ) {
+                        val outputText = log.vlmRawOutput ?: "<null>"
                         Text(
-                            text = log.vlmRawOutput ?: "<null>",
-                            style = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 10.sp, color = Color(0xFFFBBF24)),
+                            text = if (outputText.isEmpty()) "<EMPTY - Model returned blank output>" else outputText,
+                            style = TextStyle(
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 10.sp,
+                                color = if (outputText.isEmpty()) Color(0xFFEF4444) else Color(0xFFFBBF24)
+                            ),
                             modifier = Modifier
                                 .padding(8.dp)
                                 .horizontalScroll(rememberScrollState())
                         )
+                    }
+
+                    // Raw Stream Results (if available)
+                    if (!log.streamRawResults.isNullOrEmpty()) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = "RAW STREAM RESULTS (${log.streamRawResults.size} items):",
+                            style = TextStyle(fontFamily = techFont, fontSize = 9.sp, fontWeight = FontWeight.Bold, color = Color.White.copy(alpha = 0.6f))
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 120.dp),
+                            color = Color.Black.copy(alpha = 0.4f),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .padding(8.dp)
+                                    .verticalScroll(rememberScrollState())
+                            ) {
+                                log.streamRawResults.forEachIndexed { idx, raw ->
+                                    Text(
+                                        text = "[$idx]: $raw",
+                                        style = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 8.sp, color = Color(0xFF94A3B8)),
+                                        modifier = Modifier.padding(vertical = 1.dp)
+                                    )
+                                }
+                            }
+                        }
                     }
 
                     Spacer(modifier = Modifier.height(12.dp))

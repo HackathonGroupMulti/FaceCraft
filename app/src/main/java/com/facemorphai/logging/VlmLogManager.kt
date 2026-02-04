@@ -27,7 +27,9 @@ object VlmLogManager {
         val parseError: String?,
         val parsedParamCount: Int?,
         val generationTimeMs: Long,
-        val attempt: Int
+        val attempt: Int,
+        val streamTokenCount: Int? = null,
+        val streamRawResults: List<String>? = null
     ) {
         fun getFormattedTime(): String = dateFormat.format(Date(timestamp))
 
@@ -40,12 +42,25 @@ object VlmLogManager {
             appendLine("📤 PROMPT ($promptLength chars):")
             appendLine(prompt)
             appendLine("───────────────────────────────────────")
+            if (streamTokenCount != null) {
+                appendLine("🔢 Stream tokens received: $streamTokenCount")
+            }
             if (vlmRawOutput != null) {
                 appendLine("📥 VLM RAW OUTPUT ($vlmOutputLength chars):")
                 appendLine("\"$vlmRawOutput\"")
+                if (vlmRawOutput.isEmpty()) {
+                    appendLine("⚠️ OUTPUT IS EMPTY - Model returned nothing!")
+                }
                 appendLine("───────────────────────────────────────")
             } else {
                 appendLine("📥 VLM OUTPUT: <null/error>")
+            }
+            if (!streamRawResults.isNullOrEmpty()) {
+                appendLine("🔍 RAW STREAM RESULTS (${streamRawResults.size} items):")
+                streamRawResults.forEachIndexed { idx, raw ->
+                    appendLine("  [$idx]: $raw")
+                }
+                appendLine("───────────────────────────────────────")
             }
             if (parseSuccess) {
                 appendLine("✅ PARSE SUCCESS: $parsedParamCount parameters")
@@ -65,7 +80,9 @@ object VlmLogManager {
         parseError: String?,
         parsedParamCount: Int?,
         generationTimeMs: Long,
-        attempt: Int
+        attempt: Int,
+        streamTokenCount: Int? = null,
+        streamRawResults: List<String>? = null
     ) {
         requestCounter++
         val entry = VlmLogEntry(
@@ -78,7 +95,9 @@ object VlmLogManager {
             parseError = parseError,
             parsedParamCount = parsedParamCount,
             generationTimeMs = generationTimeMs,
-            attempt = attempt
+            attempt = attempt,
+            streamTokenCount = streamTokenCount,
+            streamRawResults = streamRawResults
         )
 
         logs.add(entry)
