@@ -117,15 +117,115 @@ User prompt → FaceMorphService → NexaService (VLM on NPU or CPU)
 5. Click "RESET" to return to default face state
 ```
 
-## Building
+## Building & Running
 
-1. Open the project in Android Studio
-2. Sync Gradle (requires JDK 11+)
-3. Build and run on any Android device (minSdk 27)
-4. Choose your model:
-   - **CPU Mode:** Download ~550MB SmolVLM (works everywhere)
-   - **NPU Mode:** Download ~4.5GB OmniNeural (Qualcomm devices)
-5. Boot the model and start morphing!
+### Prerequisites
+
+- **Android Studio** Hedgehog (2023.1.1) or newer
+- **JDK 11+**
+- **Android SDK** with API level 27+ (Android 8.1 Oreo minimum)
+- **Physical Android device** (emulators don't support the VLM inference)
+
+### Build Steps
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/HackathonGroupMulti/FaceCraft.git
+cd FaceCraft
+
+# 2. Open in Android Studio
+# File → Open → Select the FaceCraft folder
+
+# 3. Sync Gradle
+# Android Studio will auto-prompt, or click "Sync Now" in the toolbar
+
+# 4. Connect your Android device via USB
+# Enable USB debugging in Developer Options
+
+# 5. Build and run
+# Click the green "Run" button or press Shift+F10
+# Select your connected device
+```
+
+### First Launch
+
+1. **CPU Safe Mode is ON by default** (green toggle) — works on all devices
+2. Tap **"DL CPU (~550MB)"** to download the SmolVLM model
+3. Wait for download to complete
+4. Tap **"BOOT CPU"** to initialize the model
+5. Select a face template (Ally or Lisa)
+6. Type a prompt like "make the eyes bigger" and tap **APPLY**
+
+### For Qualcomm Devices (Optional NPU Acceleration)
+
+1. Toggle the **CPU switch OFF** (turns purple)
+2. Tap **"DL NPU (~4.5GB)"** to download OmniNeural
+3. Tap **"BOOT NPU"** to initialize with Hexagon NPU acceleration
+
+## Why NexaSDK?
+
+**NexaSDK** is the core inference engine that makes FaceCraft possible. Here's why we chose it and how it's integrated:
+
+### Why NexaSDK
+
+1. **On-Device Privacy** — All AI inference runs locally on the phone. No data leaves the device, no cloud API calls, no internet required after model download.
+
+2. **Qualcomm NPU Acceleration** — NexaSDK provides direct access to Qualcomm's Hexagon NPU via FastRPC, enabling 2-5x faster inference compared to CPU-only execution on supported devices.
+
+3. **Multiple Model Support** — Supports both large NPU-optimized models (OmniNeural-4B) and lightweight GGUF models (SmolVLM-256M), giving us flexibility for different device capabilities.
+
+4. **Streaming Generation** — The SDK provides token-by-token streaming, allowing real-time feedback during generation.
+
+### Where NexaSDK is Used
+
+NexaSDK is integrated in **[NexaService.kt](app/src/main/java/com/facemorphai/service/NexaService.kt)** — a singleton wrapper that manages all VLM operations:
+
+```kotlin
+// SDK Initialization (line ~70)
+NexaSDK.initialize(licenseToken, callback)
+
+// Model Loading - NPU Mode (line ~268)
+VlmWrapper.builder()
+    .vlmCreateInput(VlmCreateInput(
+        model_name = "omni-neural",
+        model_path = manifestPath,
+        config = ModelConfig(npu_lib_folder_path = ..., npu_model_folder_path = ...),
+        plugin_id = "npu"  // Uses Hexagon NPU
+    ))
+    .build()
+
+// Model Loading - CPU Mode (line ~136)
+VlmWrapper.builder()
+    .vlmCreateInput(VlmCreateInput(
+        model_name = "SmolVLM-256M",
+        model_path = ggufPath,
+        config = ModelConfig(nGpuLayers = 0, nThreads = 4),
+        plugin_id = "cpu_gpu"  // CPU/GPU only, no NPU
+    ))
+    .build()
+
+// Text Generation with Streaming (line ~377)
+wrapper.generateStreamFlow(prompt, GenerateConfig(maxTokens = 512))
+    .collect { token -> /* process each token */ }
+```
+
+### NexaSDK Flow in FaceCraft
+
+```
+User types "make eyes bigger"
+           ↓
+FaceMorphService builds optimized prompt with blendshape keys
+           ↓
+NexaService.generateStream() → NexaSDK VlmWrapper
+           ↓
+VLM runs on NPU (or CPU) and streams JSON tokens
+           ↓
+{"eyeWideLeft": 0.6, "eyeWideRight": 0.6}
+           ↓
+MorphParameterParser validates and extracts values
+           ↓
+WebViewBridge sends to Three.js → Face morphs in real-time
+```
 
 ## Technical Details
 
