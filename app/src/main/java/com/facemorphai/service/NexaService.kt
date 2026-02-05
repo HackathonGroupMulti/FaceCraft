@@ -17,7 +17,7 @@ import java.lang.ref.WeakReference
 
 /**
  * Service for managing NexaSDK initialization and VLM operations.
- * Replicates the exact loading strategy from the official Nexa SDK Demo.
+ * Supports both NPU-accelerated models and CPU-only models.
  */
 class NexaService private constructor(context: Context) {
 
@@ -27,7 +27,10 @@ class NexaService private constructor(context: Context) {
     companion object {
         private const val TAG = "NexaService"
 
-        const val MODEL_NAME = "omni-neural"
+        // Model configurations
+        const val MODEL_OMNI_NEURAL = "omni-neural"
+        const val MODEL_GRANITE = "granite"
+
         const val PLUGIN_ID_NPU = "npu"
         const val PLUGIN_ID_CPU = "cpu"
 
@@ -41,10 +44,22 @@ class NexaService private constructor(context: Context) {
         }
     }
 
+    /**
+     * Model type determines loading strategy.
+     */
+    enum class ModelType {
+        /** VLM that can use NPU acceleration (OmniNeural) */
+        VLM_NPU,
+        /** CPU-only model - completely avoids NPU initialization */
+        CPU_ONLY
+    }
+
     private var vlmWrapper: VlmWrapper? = null
     private var isInitialized = false
     private var isModelLoaded = false
     private var currentPluginId: String = PLUGIN_ID_CPU
+    private var currentModelType: ModelType = ModelType.CPU_ONLY
+    private var currentModelName: String = MODEL_GRANITE
 
     private val modelScope = CoroutineScope(Dispatchers.IO)
 
@@ -73,7 +88,154 @@ class NexaService private constructor(context: Context) {
     }
 
     /**
-     * Load the VLM model using the manifest path.
+     * Load a GGUF model for CPU/GPU (like SmolVLM).
+     * This completely avoids NPU initialization - safe for Samsung S24 Ultra and other non-Qualcomm devices.
+     *
+     * @param modelPath Path to the .gguf model file
+     * @param mmprojPath Optional path to the mmproj file for VLMs
+     * @param modelName Display name for the model
+     */
+    fun loadGgufModel(
+        modelPath: String,
+        mmprojPath: String? = null,
+        modelName: String = "SmolVLM",
+        callback: ModelLoadCallback
+    ) {
+        if (!isInitialized) {
+            callback.onFailure("SDK not initialized.")
+            return
+        }
+
+        currentModelType = ModelType.CPU_ONLY
+        currentModelName = modelName
+        currentPluginId = PLUGIN_ID_CPU
+
+        modelScope.launch {
+            // Unload any existing model first
+            if (isModelLoaded) {
+                Log.d(TAG, "Unloading existing model before loading GGUF model")
+                unloadModelSync()
+            }
+
+            try {
+                Log.d(TAG, "Loading GGUF model: $modelName")
+                Log.d(TAG, "Model path: $modelPath")
+                Log.d(TAG, "MMProj path: $mmprojPath")
+
+                // CPU/GPU config - NO NPU paths at all
+                val nGpuLayers = 0  // CPU only, set > 0 for GPU offload
+                val config = ModelConfig(
+                    nCtx = 1024,
+                    nThreads = 4,
+                    nBatch = 1,
+                    nUBatch = 1,
+                    nGpuLayers = nGpuLayers,
+                    enable_thinking = false
+                    // Note: NOT setting npu_lib_folder_path or npu_model_folder_path
+                )
+
+                val pluginId = "cpu_gpu"
+                Log.d(TAG, "Model config: nCtx=1024, nThreads=4, nBatch=1, nUBatch=1, nGpuLayers=$nGpuLayers")
+                Log.d(TAG, "Plugin ID: $pluginId (GPU offload: ${if (nGpuLayers > 0) "enabled" else "disabled"})")
+
+                VlmWrapper.builder()
+                    .vlmCreateInput(
+                        VlmCreateInput(
+                            model_name = modelName,
+                            model_path = modelPath,
+                            mmproj_path = mmprojPath,
+                            config = config,
+                            plugin_id = pluginId
+                        )
+                    )
+                    .build()
+                    .onSuccess { wrapper ->
+                        vlmWrapper = wrapper
+                        isModelLoaded = true
+                        Log.d(TAG, "GGUF model loaded successfully: $modelName (plugin: $pluginId, GPU layers: $nGpuLayers)")
+                        callback.onSuccess()
+                    }
+                    .onFailure { error ->
+                        Log.e(TAG, "GGUF model load failed: ${error.message}")
+                        callback.onFailure(error.message ?: "Load failed")
+                    }
+            } catch (e: Exception) {
+                Log.e(TAG, "Exception loading GGUF model: ${e.message}", e)
+                callback.onFailure(e.message ?: "Load error")
+            }
+        }
+    }
+
+    /**
+     * Legacy: Load a CPU-only model using NPU model format but forcing CPU.
+     * May still crash on some devices. Prefer loadGgufModel() instead.
+     */
+    @Deprecated("Use loadGgufModel() for true CPU-only operation")
+    fun loadCpuOnlyModel(
+        manifestPath: String,
+        modelName: String = MODEL_GRANITE,
+        callback: ModelLoadCallback
+    ) {
+        if (!isInitialized) {
+            callback.onFailure("SDK not initialized.")
+            return
+        }
+
+        currentModelType = ModelType.CPU_ONLY
+        currentModelName = modelName
+        currentPluginId = PLUGIN_ID_CPU
+
+        modelScope.launch {
+            if (isModelLoaded) {
+                Log.d(TAG, "Unloading existing model before loading CPU-only model")
+                unloadModelSync()
+            }
+
+            try {
+                Log.d(TAG, "Loading CPU-only model (legacy): $modelName")
+                Log.d(TAG, "Manifest: $manifestPath")
+                Log.d(TAG, "Plugin ID: $PLUGIN_ID_CPU")
+
+                // Attempt CPU without NPU paths
+                val config = ModelConfig(
+                    nCtx = 2048,
+                    nThreads = 4,
+                    enable_thinking = false
+                    // Note: NOT setting npu_lib_folder_path or npu_model_folder_path
+                )
+
+                Log.d(TAG, "CPU-only config: nCtx=2048, nThreads=4, no NPU paths")
+
+                VlmWrapper.builder()
+                    .vlmCreateInput(
+                        VlmCreateInput(
+                            model_name = modelName,
+                            model_path = manifestPath,
+                            config = config,
+                            plugin_id = PLUGIN_ID_CPU
+                        )
+                    )
+                    .build()
+                    .onSuccess { wrapper ->
+                        vlmWrapper = wrapper
+                        isModelLoaded = true
+                        Log.d(TAG, "CPU-only model loaded: $modelName")
+                        callback.onSuccess()
+                    }
+                    .onFailure { error ->
+                        Log.e(TAG, "CPU-only model load failed: ${error.message}")
+                        callback.onFailure(error.message ?: "Load failed")
+                    }
+            } catch (e: Exception) {
+                Log.e(TAG, "Exception loading CPU model: ${e.message}", e)
+                callback.onFailure(e.message ?: "Load error")
+            }
+        }
+    }
+
+    /**
+     * Load the VLM model with NPU preference (OmniNeural).
+     * Falls back to CPU if NPU fails.
      */
     fun loadModel(
         manifestPath: String,
@@ -91,11 +253,18 @@ class NexaService private constructor(context: Context) {
             return
         }
 
+        currentModelType = ModelType.VLM_NPU
+        currentModelName = MODEL_OMNI_NEURAL
         currentPluginId = if (preferNpu) PLUGIN_ID_NPU else PLUGIN_ID_CPU
         val modelFolder = File(manifestPath).parent ?: ""
 
         modelScope.launch {
             try {
+                Log.d(TAG, "Loading model: $MODEL_OMNI_NEURAL")
+                Log.d(TAG, "Manifest path: $manifestPath")
+                Log.d(TAG, "Model folder: $modelFolder")
+                Log.d(TAG, "Prefer NPU: $preferNpu, Plugin ID: $currentPluginId")
+
                 val config = ModelConfig(
                     nCtx = 2048,
                     nThreads = 4,
@@ -104,10 +273,12 @@ class NexaService private constructor(context: Context) {
                     npu_model_folder_path = modelFolder
                 )
 
+                Log.d(TAG, "Model config: nCtx=2048, nThreads=4, NPU lib: ${ctx.applicationInfo.nativeLibraryDir}")
+
                 VlmWrapper.builder()
                     .vlmCreateInput(
                         VlmCreateInput(
-                            model_name = MODEL_NAME,
+                            model_name = MODEL_OMNI_NEURAL,
                             model_path = manifestPath,
                             config = config,
                             plugin_id = currentPluginId
@@ -117,7 +288,7 @@ class NexaService private constructor(context: Context) {
                     .onSuccess { wrapper ->
                         vlmWrapper = wrapper
                         isModelLoaded = true
-                        Log.d(TAG, "Model loaded successfully with: $currentPluginId")
+                        Log.d(TAG, "Model loaded successfully with plugin: $currentPluginId (NPU: ${currentPluginId == PLUGIN_ID_NPU})")
                         callback.onSuccess()
                     }
                     .onFailure { error ->
@@ -145,6 +316,7 @@ class NexaService private constructor(context: Context) {
         callback: ModelLoadCallback
     ) {
         val ctx = context ?: return
+        Log.d(TAG, "CPU Fallback: Attempting to load model with CPU plugin")
         currentPluginId = PLUGIN_ID_CPU
         val modelFolder = File(manifestPath).parent ?: ""
 
@@ -156,10 +328,12 @@ class NexaService private constructor(context: Context) {
             npu_model_folder_path = modelFolder
         )
 
+        Log.d(TAG, "CPU Fallback config: nCtx=2048, nThreads=4, plugin=$PLUGIN_ID_CPU")
+
         VlmWrapper.builder()
             .vlmCreateInput(
                 VlmCreateInput(
-                    model_name = MODEL_NAME,
+                    model_name = MODEL_OMNI_NEURAL,
                     model_path = manifestPath,
                     config = config,
                     plugin_id = PLUGIN_ID_CPU
@@ -169,9 +343,11 @@ class NexaService private constructor(context: Context) {
             .onSuccess { wrapper ->
                 vlmWrapper = wrapper
                 isModelLoaded = true
+                Log.d(TAG, "CPU Fallback: Model loaded successfully")
                 callback.onSuccess()
             }
             .onFailure { error ->
+                Log.e(TAG, "CPU Fallback: Load failed - ${error.message}")
                 callback.onFailure(error.message ?: "CPU load failed")
             }
     }
@@ -193,6 +369,7 @@ class NexaService private constructor(context: Context) {
         generationCount++
         val currentGeneration = generationCount
         Log.d(TAG, "=== GENERATION #$currentGeneration START ===")
+        Log.d(TAG, "Model: $currentModelName ($currentModelType)")
         Log.d(TAG, "Prompt length: ${prompt.length} chars")
 
         try {
@@ -200,7 +377,7 @@ class NexaService private constructor(context: Context) {
                 maxTokens = 512,
                 stopWords = null,
                 stopCount = 0,
-                nPast = 0,  // Should reset context, but may not work as expected
+                nPast = 0,
                 imagePaths = null,
                 imageCount = 0,
                 audioPaths = null,
@@ -213,19 +390,15 @@ class NexaService private constructor(context: Context) {
             wrapper.generateStreamFlow(prompt, genConfig)
                 .collect { result ->
                     rawResultCount++
-                    // The SDK result is an object. We extract the text property from its string representation.
                     val resultStr = result.toString()
 
-                    // Log every raw result for debugging
                     Log.d(TAG, "Gen#$currentGeneration Raw[$rawResultCount]: $resultStr")
 
                     if (resultStr.contains("text=")) {
-                        // Surgically extract text content: finds "text=" and grabs until the closing part
                         val start = resultStr.indexOf("text=") + 5
                         var end = resultStr.indexOf(")", start)
                         val comma = resultStr.indexOf(",", start)
 
-                        // Handle cases where comma comes before closing parenthesis
                         if (comma in (start + 1)..<end) {
                             end = comma
                         }
@@ -283,7 +456,6 @@ class NexaService private constructor(context: Context) {
                 is StreamResult.Completed -> { }
                 is StreamResult.Error -> error = result.message
             }
-            // Capture raw result for debugging
             rawResults.add(result.toString())
         }
 
@@ -294,7 +466,7 @@ class NexaService private constructor(context: Context) {
                 text = builder.toString(),
                 tokenCount = tokenCount,
                 rawResultCount = rawResults.size,
-                rawResults = rawResults.takeLast(20) // Keep last 20 for debugging
+                rawResults = rawResults.takeLast(20)
             ))
         }
     }
@@ -305,14 +477,19 @@ class NexaService private constructor(context: Context) {
         }
     }
 
+    private suspend fun unloadModelSync() {
+        vlmWrapper?.let {
+            it.stopStream()
+            it.destroy()
+        }
+        vlmWrapper = null
+        isModelLoaded = false
+        Log.d(TAG, "Model unloaded (sync)")
+    }
+
     fun unloadModel() {
         modelScope.launch {
-            vlmWrapper?.let {
-                it.stopStream()
-                it.destroy()
-            }
-            vlmWrapper = null
-            isModelLoaded = false
+            unloadModelSync()
             Log.d(TAG, "Model unloaded")
         }
     }
@@ -326,6 +503,8 @@ class NexaService private constructor(context: Context) {
     fun isReady(): Boolean = isInitialized
     fun hasModelLoaded(): Boolean = isModelLoaded
     fun getCurrentPlugin(): String = currentPluginId
+    fun getCurrentModelType(): ModelType = currentModelType
+    fun getCurrentModelName(): String = currentModelName
 
     interface InitCallback {
         fun onSuccess()
