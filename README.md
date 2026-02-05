@@ -2,26 +2,39 @@
 
 An Android app for AI-powered 3D face morphing, built for the **Nexa × Qualcomm On-Device AI Hackathon**.
 
-Describe facial modifications in natural language — "make the eyes bigger", "sharpen the jawline" — and watch them applied in real time on an interactive 3D face rendered with Three.js. All inference runs on-device using a Vision Language Model accelerated by the Qualcomm Hexagon NPU.
+Describe facial modifications in natural language — "make the eyes bigger", "sharpen the jawline" — and watch them applied in real time on an interactive 3D face rendered with Three.js. All inference runs **completely on-device** using Vision Language Models with support for both Qualcomm NPU acceleration and CPU-only mode for universal device compatibility.
 
 ## Features
 
 - **Natural language face modification** — Describe changes in plain English and watch them applied instantly
 - **Cumulative morphing** — Each prompt builds on previous modifications (e.g., "make eyes bigger" → "make nose smaller" preserves eye changes)
 - **Real-time 3D visualization** — Interactive WebGL rendering with Three.js and smooth morph animations
-- **On-device AI inference** — Uses NexaSDK with OmniNeural-4B-mobile VLM, accelerated by Qualcomm Hexagon NPU
+- **Dual model support:**
+  - **NPU Mode** — OmniNeural-4B (~4.5GB) with Qualcomm Hexagon NPU acceleration
+  - **CPU Mode** — SmolVLM-256M (~550MB) for universal device compatibility (Samsung, Pixel, etc.)
 - **34 morph parameters** — Fine control across 8 face regions (eyes, nose, jaw, cheeks, mouth, forehead, face shape)
 - **Region-focused morphing** — Target specific face areas for precise modifications
 - **Multiple face templates** — Pre-loaded Ally and Lisa models with ARKit blend shape support
 - **Robust JSON parsing** — Multi-strategy extraction handles VLM output variations reliably
-- **Hardware acceleration** — Hexagon NPU support with automatic CPU fallback for compatibility
+- **Comprehensive debug logging** — Track model type, generation stats, and JSON outputs
+
+## Device Compatibility
+
+| Mode | Model | Size | Devices | Speed |
+|------|-------|------|---------|-------|
+| **CPU Safe Mode** (Default) | SmolVLM-256M | ~550MB | All Android devices | ~3-8s |
+| **NPU Mode** | OmniNeural-4B | ~4.5GB | Qualcomm Snapdragon 8 Gen 2+ | ~2-5s |
+
+**CPU Safe Mode** is enabled by default, making the app work on any Android device including Samsung Galaxy S24 Ultra, Google Pixel, and other non-Qualcomm devices.
 
 ## Tech Stack
 
-- **Kotlin** + **Jetpack Compose** — Android UI
-- **NexaSDK** with **OmniNeural-4B-mobile** — on-device VLM inference
+- **Kotlin** + **Jetpack Compose** — Modern Android UI
+- **NexaSDK** — On-device VLM inference engine
+- **OmniNeural-4B-mobile** — NPU-accelerated VLM for Qualcomm devices
+- **SmolVLM-256M-Instruct** — Lightweight CPU/GPU VLM for universal compatibility
 - **Three.js** (r128) — WebGL 3D rendering via Android WebView
-- **Qualcomm Hexagon NPU** — hardware-accelerated inference via FastRPC
+- **Qualcomm Hexagon NPU** — Hardware-accelerated inference via FastRPC (when available)
 - **Kotlinx Serialization** + **Kotlinx Coroutines** — JSON handling and async operations
 
 ## How It Works
@@ -41,7 +54,7 @@ The app uses a **multi-layered parsing strategy** to handle small model inconsis
 - **Strategy 3:** Regex-based manual extraction for malformed JSON
 - **Strategy 4:** Natural language pattern matching (e.g., "set eyeBlink_L to 0.6")
 
-This ensures reliable operation even when the 4B mobile VLM outputs explanatory text alongside JSON.
+This ensures reliable operation even when VLMs output explanatory text alongside JSON.
 
 ### Enhanced Prompt Engineering
 The system uses aggressive formatting instructions to guide the VLM:
@@ -53,7 +66,7 @@ The system uses aggressive formatting instructions to guide the VLM:
 ## Architecture
 
 ```
-User prompt → FaceMorphService → NexaService (VLM on Hexagon NPU)
+User prompt → FaceMorphService → NexaService (VLM on NPU or CPU)
                                         ↓
                               JSON morph parameters
                                         ↓
@@ -63,6 +76,22 @@ User prompt → FaceMorphService → NexaService (VLM on Hexagon NPU)
                                         ↓
                  3D face rendered with smooth morph animation
 ```
+
+## Quick Start
+
+### Option 1: CPU Safe Mode (Recommended for most devices)
+
+1. Open the app — CPU toggle is **ON** by default (green)
+2. Tap **"DL CPU (~550MB)"** to download SmolVLM
+3. Tap **"BOOT CPU"** to initialize
+4. Start morphing with natural language prompts!
+
+### Option 2: NPU Mode (Qualcomm devices only)
+
+1. Toggle the **CPU switch OFF** (turns purple)
+2. Tap **"DL NPU (~4.5GB)"** to download OmniNeural
+3. Tap **"BOOT NPU"** to initialize with NPU acceleration
+4. Start morphing!
 
 ## Usage Example
 
@@ -88,43 +117,69 @@ User prompt → FaceMorphService → NexaService (VLM on Hexagon NPU)
 5. Click "RESET" to return to default face state
 ```
 
-The app maintains state across all modifications, allowing iterative refinement of the 3D face model.
-
 ## Building
 
 1. Open the project in Android Studio
 2. Sync Gradle (requires JDK 11+)
-3. Build and run on a Qualcomm-powered Android device (minSdk 27)
-4. The app will download the OmniNeural-4B-mobile model (~4.76 GB) on first launch
-5. Initialize the model by clicking "BOOT CORE"
-6. Start morphing with natural language prompts!
+3. Build and run on any Android device (minSdk 27)
+4. Choose your model:
+   - **CPU Mode:** Download ~550MB SmolVLM (works everywhere)
+   - **NPU Mode:** Download ~4.5GB OmniNeural (Qualcomm devices)
+5. Boot the model and start morphing!
 
 ## Technical Details
 
 ### Key Components
 
-- **[FaceMorphService.kt](app/src/main/java/com/facemorphai/service/FaceMorphService.kt)** — Core business logic for VLM prompt construction and state management
-- **[NexaService.kt](app/src/main/java/com/facemorphai/service/NexaService.kt)** — Singleton wrapper for NexaSDK, handles NPU/CPU inference
-- **[MorphParameterParser.kt](app/src/main/java/com/facemorphai/parser/MorphParameterParser.kt)** — Multi-strategy JSON parser with fallback extraction
-- **[WebViewBridge.kt](app/src/main/java/com/facemorphai/bridge/WebViewBridge.kt)** — Android ↔ JavaScript IPC for 3D viewer communication
-- **[face_viewer.html](app/src/main/assets/face_viewer.html)** — Three.js WebGL application with FBXLoader and morph target animation
+| Component | Description |
+|-----------|-------------|
+| [FaceMorphService.kt](app/src/main/java/com/facemorphai/service/FaceMorphService.kt) | Core business logic for VLM prompt construction and state management |
+| [NexaService.kt](app/src/main/java/com/facemorphai/service/NexaService.kt) | Singleton wrapper for NexaSDK, handles NPU/CPU/GGUF model loading |
+| [ModelDownloader.kt](app/src/main/java/com/facemorphai/service/ModelDownloader.kt) | Downloads both NPU (OmniNeural) and CPU (SmolVLM) models |
+| [MorphParameterParser.kt](app/src/main/java/com/facemorphai/parser/MorphParameterParser.kt) | Multi-strategy JSON parser with fallback extraction |
+| [VlmLogManager.kt](app/src/main/java/com/facemorphai/logging/VlmLogManager.kt) | Debug logging with model type, JSON output, and generation stats |
+| [WebViewBridge.kt](app/src/main/java/com/facemorphai/bridge/WebViewBridge.kt) | Android ↔ JavaScript IPC for 3D viewer communication |
+| [face_viewer.html](app/src/main/assets/face_viewer.html) | Three.js WebGL application with FBXLoader and morph target animation |
+
+### Debug Logging
+
+The app includes comprehensive VLM debug logging accessible via the **LOG** button:
+
+```
+═══════════════════════════════════════
+📋 Request #1 (Attempt 1)
+🕐 Time: 14:32:15.123
+⏱️ Duration: 1234ms
+🤖 Model: SmolVLM-256M (CPU_ONLY)
+───────────────────────────────────────
+📤 PROMPT (156 chars):
+Output ONLY JSON. No markdown, no text.
+Keys: browInnerUp, browOuterUpLeft...
+───────────────────────────────────────
+🔢 Stream tokens received: 12
+📥 VLM RAW OUTPUT (45 chars):
+"{"browInnerUp":0.6,"browOuterUpLeft":0.4}"
+───────────────────────────────────────
+✅ PARSE SUCCESS: 2 parameters
+═══════════════════════════════════════
+```
 
 ### Robustness Features
 
-The app is designed to handle the unpredictability of small on-device VLMs:
-
 1. **Dynamic Blendshape Discovery** — Automatically detects available morph targets from loaded FBX models
 2. **Retry Logic** — 2-attempt generation with automatic fallback strategies
-3. **Comprehensive Logging** — Detailed logs for debugging VLM output and parsing issues (filter: `FaceMorphService` or `MorphParameterParser`)
-4. **Graceful Degradation** — Falls back to CPU if Hexagon NPU is unavailable
-5. **State Merging** — Intelligent parameter merging preserves non-zero values across requests
+3. **Graceful Degradation** — Falls back to CPU if Hexagon NPU is unavailable
+4. **State Merging** — Intelligent parameter merging preserves non-zero values across requests
+5. **Model Type Tracking** — Logs distinguish between CPU_ONLY and VLM_NPU modes
 
 ### Performance
 
-- **Model Size:** ~4.76 GB (OmniNeural-4B-mobile)
-- **Inference Speed:** ~2-5 seconds per prompt (varies by device)
-- **Context Window:** 2048 tokens
-- **Max Output Tokens:** 256 (sufficient for JSON morph parameters)
+| Metric | NPU Mode | CPU Mode |
+|--------|----------|----------|
+| Model Size | ~4.5 GB | ~550 MB |
+| Inference Speed | ~2-5 seconds | ~3-8 seconds |
+| Context Window | 2048 tokens | 1024 tokens |
+| Max Output Tokens | 256 | 512 |
 
 ## 3D Model Credits
 
@@ -137,3 +192,7 @@ This project uses 3D models licensed under [Creative Commons Attribution 4.0](ht
 - **"Lisa - Woman Head with BlendShapes"** by skullvez
   https://skfb.ly/o69ns
   Licensed under [CC-BY-4.0](http://creativecommons.org/licenses/by/4.0/)
+
+## License
+
+Built for the Nexa × Qualcomm On-Device AI Hackathon.

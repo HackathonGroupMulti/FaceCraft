@@ -367,6 +367,10 @@
 
                 document.getElementById('loading').style.display = 'none';
                 Android.log('FBX Loaded: ' + path + ' | Meshes: ' + allMeshes.length);
+
+                // Auto-diagnose model capabilities
+                diagnoseModel();
+
                 Android.onModelLoaded();
             }, undefined, function(err) {
                 Android.error('FBX Load Error: ' + (err.message || err));
@@ -385,7 +389,98 @@
         // =============================================
         window.onload = init;
 
+        // =============================================
+        // Diagnostic: Report model capabilities
+        // =============================================
+        function diagnoseModel() {
+            var report = {
+                meshes: [],
+                bones: [],
+                skinnedMeshes: [],
+                totalVertices: 0,
+                hasSkeleton: false
+            };
+
+            if (!currentModel) {
+                Android.log('DIAG: No model loaded');
+                return report;
+            }
+
+            currentModel.traverse(function(child) {
+                // Check for bones
+                if (child.isBone) {
+                    report.bones.push({
+                        name: child.name,
+                        parent: child.parent ? child.parent.name : null
+                    });
+                    report.hasSkeleton = true;
+                }
+
+                // Check meshes
+                if (child.isMesh || child.isSkinnedMesh) {
+                    var meshInfo = {
+                        name: child.name,
+                        type: child.isSkinnedMesh ? 'SkinnedMesh' : 'Mesh',
+                        vertexCount: 0,
+                        hasGeometry: false,
+                        canModifyVertices: false,
+                        morphTargetCount: 0
+                    };
+
+                    if (child.geometry) {
+                        meshInfo.hasGeometry = true;
+                        if (child.geometry.attributes && child.geometry.attributes.position) {
+                            meshInfo.vertexCount = child.geometry.attributes.position.count;
+                            meshInfo.canModifyVertices = true;
+                            report.totalVertices += meshInfo.vertexCount;
+                        }
+                    }
+
+                    if (child.morphTargetDictionary) {
+                        meshInfo.morphTargetCount = Object.keys(child.morphTargetDictionary).length;
+                    }
+
+                    if (child.isSkinnedMesh) {
+                        report.skinnedMeshes.push(meshInfo);
+                        if (child.skeleton) {
+                            meshInfo.boneCount = child.skeleton.bones.length;
+                        }
+                    }
+
+                    report.meshes.push(meshInfo);
+                }
+            });
+
+            // Log summary
+            Android.log('=== MODEL DIAGNOSIS ===');
+            Android.log('Total meshes: ' + report.meshes.length);
+            Android.log('Skinned meshes: ' + report.skinnedMeshes.length);
+            Android.log('Total bones: ' + report.bones.length);
+            Android.log('Total vertices: ' + report.totalVertices);
+            Android.log('Has skeleton: ' + report.hasSkeleton);
+
+            if (report.bones.length > 0) {
+                Android.log('--- BONES ---');
+                for (var i = 0; i < Math.min(report.bones.length, 50); i++) {
+                    Android.log('  ' + report.bones[i].name);
+                }
+                if (report.bones.length > 50) {
+                    Android.log('  ... and ' + (report.bones.length - 50) + ' more');
+                }
+            }
+
+            Android.log('--- MESHES ---');
+            for (var i = 0; i < report.meshes.length; i++) {
+                var m = report.meshes[i];
+                Android.log('  ' + m.name + ' (' + m.type + '): ' + m.vertexCount + ' verts, ' + m.morphTargetCount + ' morphs, canModify=' + m.canModifyVertices);
+            }
+
+            Android.log('=== END DIAGNOSIS ===');
+            return report;
+        }
+
         // Expose functions to Android bridge
+        window.diagnoseModel = diagnoseModel;
         window.loadModel = loadModel;
         window.loadTemplateModel = loadTemplateModel;
         window.applyMorphs = applyMorphsImmediate;

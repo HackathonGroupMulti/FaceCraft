@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(./gradlew.bat assembleDebug:*)"
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nFix suspend function calls and add detailed model loading logs\n\n- Make unloadModelSync\\(\\) a suspend function to properly call stopStream\\(\\)\n- Move unloadModelSync\\(\\) calls inside coroutine scope in loadGgufModel and loadCpuOnlyModel\n- Add comprehensive logging for GPU/NPU configuration during model loading\n- Log model type, plugin ID, config parameters, and load success/failure details\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")"
     ]
   }
 }

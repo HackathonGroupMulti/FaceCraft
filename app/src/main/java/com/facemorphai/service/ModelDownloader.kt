@@ -14,17 +14,17 @@ import java.net.URL
 
 /**
  * Handles downloading AI models from remote URLs.
+ * Supports both NPU models (.nexa) and CPU/GPU models (.gguf).
  */
 class ModelDownloader(private val context: Context) {
 
     companion object {
         private const val TAG = "ModelDownloader"
 
-        // HuggingFace model info
+        // ========== NPU MODEL (Qualcomm only) ==========
         const val HF_REPO = "NexaAI/OmniNeural-4B-mobile"
         const val HF_BASE_URL = "https://huggingface.co/$HF_REPO/resolve/main/"
 
-        // Model files needed exactly as the SDK expects
         val MODEL_FILES = listOf(
             "config.json",
             "nexa.manifest",
@@ -42,8 +42,17 @@ class ModelDownloader(private val context: Context) {
             "files-1-1.nexa"
         )
 
-        // The SDK often expects the model folder to be named exactly this
         const val MODEL_DIR_NAME = "OmniNeural-4B-mobile"
+
+        // ========== CPU MODEL (Works on all devices) ==========
+        const val CPU_MODEL_NAME = "SmolVLM-256M"
+        const val CPU_MODEL_DIR_NAME = "SmolVLM-256M-Instruct"
+        const val CPU_HF_BASE_URL = "https://huggingface.co/ggml-org/SmolVLM-256M-Instruct-GGUF/resolve/main/"
+
+        val CPU_MODEL_FILES = listOf(
+            "SmolVLM-256M-Instruct-f16.gguf",
+            "mmproj-SmolVLM-256M-Instruct-f16.gguf"
+        )
 
         // Nexa license token
         const val LICENSE_TOKEN = "key/eyJhY2NvdW50Ijp7ImlkIjoiNDI1Y2JiNWQtNjk1NC00NDYxLWJiOWMtYzhlZjBiY2JlYzA2In0sInByb2R1Y3QiOnsiaWQiOiIxNDY0ZTk1MS04MGM5LTRjN2ItOWZmYS05MmYyZmQzNmE5YTMifSwicG9saWN5Ijp7ImlkIjoiYzI1YjE3OTUtNTY0OC00NGY1LTgxMmUtNGQ3ZWM3ZjFjYWI0IiwiZHVyYXRpb24iOjI1OTIwMDB9LCJ1c2VyIjp7ImlkIjoiMDM0NjUyZjMtYjc0NS00YzlkLWE3NGItMmRiZmVlM2JhMDQzIiwiZW1haWwiOiJyaWNhcmRvYmV6i06QGdtYWlsLmNvbSJ9LCJsaWNlbnNlIjp7ImlkIjoiOWMyODQ2N2YtYzQ0ZC00N2Y5LWJmZDAtMjMzZmNiNzc0NjQ0IiwiY3JlYXRlZCI6IjIwMjYtMDEtMjNUMjA6MjE6NTAuNTE2WiIsImV4cGlyeSI6IjIwMjYtMDItMjJUMjA6MjE6NTAuNTE2WiJ9fQ==.ALRx-MRDIZkxgk4L_X61uZ2iwccq5V_qfXESTjNonhTCncGPZnlqAPByQkm9skYkYZON8rM0AIAis1t7SlELAw=="
@@ -51,6 +60,8 @@ class ModelDownloader(private val context: Context) {
 
     private val modelsDir: File
         get() = File(context.filesDir, "models")
+
+    // ========== NPU MODEL METHODS ==========
 
     fun isModelDownloaded(): Boolean {
         val modelDir = getModelDirectory()
@@ -82,6 +93,75 @@ class ModelDownloader(private val context: Context) {
         modelDir.listFiles()?.forEach { totalSize += it.length() }
         return totalSize / 1024 / 1024
     }
+
+    // ========== CPU MODEL METHODS (For non-Qualcomm devices) ==========
+
+    fun isCpuModelDownloaded(): Boolean {
+        val modelDir = getCpuModelDirectory()
+        if (!modelDir.exists()) return false
+        val modelFile = File(modelDir, CPU_MODEL_FILES[0])
+        return modelFile.exists() && modelFile.length() > 0
+    }
+
+    fun getCpuModelPath(): String {
+        return File(getCpuModelDirectory(), CPU_MODEL_FILES[0]).absolutePath
+    }
+
+    fun getCpuMmprojPath(): String? {
+        val mmproj = File(getCpuModelDirectory(), CPU_MODEL_FILES[1])
+        return if (mmproj.exists()) mmproj.absolutePath else null
+    }
+
+    private fun getCpuModelDirectory(): File {
+        val modelDir = File(modelsDir, CPU_MODEL_DIR_NAME)
+        if (!modelDir.exists()) {
+            modelDir.mkdirs()
+        }
+        return modelDir
+    }
+
+    fun getCpuModelSizeMB(): Long {
+        val modelDir = getCpuModelDirectory()
+        if (!modelDir.exists()) return 0
+        var totalSize = 0L
+        modelDir.listFiles()?.forEach { totalSize += it.length() }
+        return totalSize / 1024 / 1024
+    }
+
+    fun downloadCpuModel(): Flow<DownloadState> = flow {
+        emit(DownloadState.Starting)
+        val modelDir = getCpuModelDirectory()
+        modelDir.mkdirs()
+
+        var totalDownloaded = 0L
+        val estimatedTotalBytes = 550_000_000L // ~550MB for SmolVLM
+
+        try {
+            for ((index, fileName) in CPU_MODEL_FILES.withIndex()) {
+                val targetFile = File(modelDir, fileName)
+                if (targetFile.exists() && targetFile.length() > 0) {
+                    totalDownloaded += targetFile.length()
+                    continue
+                }
+
+                val fileUrl = CPU_HF_BASE_URL + fileName + "?download=true"
+                emit(DownloadState.Progress(
+                    progress = (index * 100 / CPU_MODEL_FILES.size),
+                    downloadedMB = totalDownloaded / 1024 / 1024,
+                    totalMB = estimatedTotalBytes / 1024 / 1024,
+                    currentFile = fileName
+                ))
+
+                Log.d(TAG, "Downloading CPU model file: $fileUrl")
+                downloadFile(fileUrl, targetFile)
+                totalDownloaded += targetFile.length()
+            }
+            emit(DownloadState.Completed(modelDir.absolutePath))
+        } catch (e: Exception) {
+            Log.e(TAG, "CPU model download failed: ${e.message}", e)
+            emit(DownloadState.Error(e.message ?: "Download failed"))
+        }
+    }.flowOn(Dispatchers.IO)
 
     fun downloadModel(): Flow<DownloadState> = flow {
         emit(DownloadState.Starting)

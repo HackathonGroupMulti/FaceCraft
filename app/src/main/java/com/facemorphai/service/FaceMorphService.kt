@@ -163,7 +163,9 @@ Task: $task
                                     generationTimeMs = attemptDuration,
                                     attempt = attempt,
                                     streamTokenCount = genResult.tokenCount,
-                                    streamRawResults = genResult.rawResults
+                                    streamRawResults = genResult.rawResults,
+                                    modelType = nexaService.getCurrentModelType().name,
+                                    modelName = nexaService.getCurrentModelName()
                                 )
                                 val scaledParams = applyIntensity(newParams, request.intensity)
                                 currentParameters = currentParameters.mergeWith(scaledParams)
@@ -188,7 +190,9 @@ Task: $task
                                     generationTimeMs = attemptDuration,
                                     attempt = attempt,
                                     streamTokenCount = genResult.tokenCount,
-                                    streamRawResults = genResult.rawResults
+                                    streamRawResults = genResult.rawResults,
+                                    modelType = nexaService.getCurrentModelType().name,
+                                    modelName = nexaService.getCurrentModelName()
                                 )
                                 lastError = "VLM output was not valid JSON: ${parseError.message}"
                                 null // signal retry
@@ -207,7 +211,9 @@ Task: $task
                             generationTimeMs = attemptDuration,
                             attempt = attempt,
                             streamTokenCount = 0,
-                            streamRawResults = null
+                            streamRawResults = null,
+                            modelType = nexaService.getCurrentModelType().name,
+                            modelName = nexaService.getCurrentModelName()
                         )
                         lastError = "VLM failed: ${error.message}"
                         null // signal retry

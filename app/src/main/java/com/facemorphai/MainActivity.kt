@@ -108,6 +108,7 @@ class MainActivity : ComponentActivity() {
         var isModelLoading by remember { mutableStateOf(false) }
         var isModelReady by remember { mutableStateOf(false) }
         var showLogDialog by remember { mutableStateOf(false) }
+        var cpuSafeMode by remember { mutableStateOf(true) }  // Default ON for Samsung S24 Ultra safety
 
         val context = LocalContext.current
 
@@ -330,59 +331,144 @@ class MainActivity : ComponentActivity() {
                                             color = primaryPurple,
                                             strokeWidth = 3.dp
                                         )
-                                    } else if (isModelDownloaded) {
-                                        Button(
-                                            onClick = {
-                                                isModelLoading = true
-                                                nexaService.initialize(object : NexaService.InitCallback {
-                                                    override fun onSuccess() {
-                                                        val manifestFile = File(modelDownloader.getModelPath(), "nexa.manifest")
-                                                        nexaService.loadModel(manifestFile.absolutePath, preferNpu = true,
-                                                            callback = object : NexaService.ModelLoadCallback {
-                                                                override fun onSuccess() {
-                                                                    isModelLoading = false
-                                                                    isModelReady = true
-                                                                    // Trigger VLM-based blendshape categorization
-                                                                    lifecycleScope.launch {
-                                                                        faceMorphService.categorizeBlendshapes()
+                                    } else {
+                                        // CPU Safe Mode toggle
+                                        var isCpuModelDownloaded by remember { mutableStateOf(modelDownloader.isCpuModelDownloaded()) }
+
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.padding(end = 8.dp)
+                                        ) {
+                                            Text(
+                                                text = "CPU",
+                                                style = TextStyle(fontFamily = techFont, fontSize = 8.sp, color = Color.White.copy(alpha = 0.7f))
+                                            )
+                                            Switch(
+                                                checked = cpuSafeMode,
+                                                onCheckedChange = { cpuSafeMode = it },
+                                                modifier = Modifier.height(20.dp),
+                                                colors = SwitchDefaults.colors(
+                                                    checkedThumbColor = Color(0xFF22C55E),
+                                                    checkedTrackColor = Color(0xFF22C55E).copy(alpha = 0.3f),
+                                                    uncheckedThumbColor = primaryPurple,
+                                                    uncheckedTrackColor = primaryPurple.copy(alpha = 0.3f)
+                                                )
+                                            )
+                                        }
+
+                                        // Check which model is available based on mode
+                                        val hasRequiredModel = if (cpuSafeMode) isCpuModelDownloaded else isModelDownloaded
+
+                                        if (hasRequiredModel) {
+                                            Button(
+                                                onClick = {
+                                                    isModelLoading = true
+                                                    nexaService.initialize(object : NexaService.InitCallback {
+                                                        override fun onSuccess() {
+                                                            if (cpuSafeMode) {
+                                                                // CPU mode - use GGUF model (SmolVLM)
+                                                                nexaService.loadGgufModel(
+                                                                    modelPath = modelDownloader.getCpuModelPath(),
+                                                                    mmprojPath = modelDownloader.getCpuMmprojPath(),
+                                                                    modelName = "SmolVLM-256M",
+                                                                    callback = object : NexaService.ModelLoadCallback {
+                                                                        override fun onSuccess() {
+                                                                            isModelLoading = false
+                                                                            isModelReady = true
+                                                                            lifecycleScope.launch {
+                                                                                faceMorphService.categorizeBlendshapes()
+                                                                            }
+                                                                        }
+                                                                        override fun onFailure(reason: String) {
+                                                                            isModelLoading = false
+                                                                            lifecycleScope.launch(Dispatchers.Main) {
+                                                                                Toast.makeText(context, "CPU Load Fail: $reason", Toast.LENGTH_LONG).show()
+                                                                            }
+                                                                        }
                                                                     }
-                                                                }
-                                                                override fun onFailure(reason: String) {
-                                                                    isModelLoading = false
-                                                                    lifecycleScope.launch(Dispatchers.Main) { Toast.makeText(context, "Link Fail: $reason", Toast.LENGTH_SHORT).show() }
+                                                                )
+                                                            } else {
+                                                                // NPU mode - for Qualcomm devices
+                                                                val manifestFile = File(modelDownloader.getModelPath(), "nexa.manifest")
+                                                                nexaService.loadModel(manifestFile.absolutePath, preferNpu = true,
+                                                                    callback = object : NexaService.ModelLoadCallback {
+                                                                        override fun onSuccess() {
+                                                                            isModelLoading = false
+                                                                            isModelReady = true
+                                                                            lifecycleScope.launch {
+                                                                                faceMorphService.categorizeBlendshapes()
+                                                                            }
+                                                                        }
+                                                                        override fun onFailure(reason: String) {
+                                                                            isModelLoading = false
+                                                                            lifecycleScope.launch(Dispatchers.Main) {
+                                                                                Toast.makeText(context, "NPU Load Fail: $reason", Toast.LENGTH_LONG).show()
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                )
+                                                            }
+                                                        }
+                                                        override fun onFailure(reason: String) {
+                                                            isModelLoading = false
+                                                            lifecycleScope.launch(Dispatchers.Main) {
+                                                                Toast.makeText(context, "SDK Init Fail: $reason", Toast.LENGTH_LONG).show()
+                                                            }
+                                                        }
+                                                    })
+                                                },
+                                                colors = ButtonDefaults.buttonColors(
+                                                    containerColor = if (cpuSafeMode) Color(0xFF22C55E) else primaryPurple
+                                                ),
+                                                shape = RoundedCornerShape(12.dp),
+                                                contentPadding = PaddingValues(horizontal = 12.dp)
+                                            ) {
+                                                if (isModelLoading) CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White)
+                                                else Text(
+                                                    text = if (cpuSafeMode) "BOOT CPU" else "BOOT NPU",
+                                                    style = TextStyle(fontFamily = techFont, fontWeight = FontWeight.Bold, color = Color.White, fontSize = 10.sp)
+                                                )
+                                            }
+                                        } else {
+                                            // Download required model
+                                            TextButton(onClick = {
+                                                isDownloading = true
+                                                lifecycleScope.launch {
+                                                    val downloadFlow = if (cpuSafeMode) {
+                                                        modelDownloader.downloadCpuModel()
+                                                    } else {
+                                                        modelDownloader.downloadModel()
+                                                    }
+                                                    downloadFlow.collect { state ->
+                                                        when (state) {
+                                                            is ModelDownloader.DownloadState.Progress -> {
+                                                                downloadProgress = state.progress
+                                                                downloadedMB = state.downloadedMB
+                                                                totalMB = state.totalMB
+                                                            }
+                                                            is ModelDownloader.DownloadState.Completed -> {
+                                                                isDownloading = false
+                                                                if (cpuSafeMode) {
+                                                                    isCpuModelDownloaded = true
+                                                                } else {
+                                                                    isModelDownloaded = true
                                                                 }
                                                             }
-                                                        )
-                                                    }
-                                                    override fun onFailure(reason: String) { isModelLoading = false }
-                                                })
-                                            },
-                                            colors = ButtonDefaults.buttonColors(containerColor = primaryPurple),
-                                            shape = RoundedCornerShape(12.dp),
-                                            contentPadding = PaddingValues(horizontal = 12.dp)
-                                        ) {
-                                            if (isModelLoading) CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White)
-                                            else Text("BOOT CORE", style = TextStyle(fontFamily = techFont, fontWeight = FontWeight.Bold, color = Color.White, fontSize = 10.sp))
-                                        }
-                                    } else {
-                                        TextButton(onClick = {
-                                            isDownloading = true
-                                            lifecycleScope.launch {
-                                                modelDownloader.downloadModel().collect { state ->
-                                                    when (state) {
-                                                        is ModelDownloader.DownloadState.Progress -> {
-                                                            downloadProgress = state.progress
-                                                            downloadedMB = state.downloadedMB
-                                                            totalMB = state.totalMB
+                                                            is ModelDownloader.DownloadState.Error -> {
+                                                                isDownloading = false
+                                                                Toast.makeText(context, "Download failed: ${state.message}", Toast.LENGTH_LONG).show()
+                                                            }
+                                                            else -> {}
                                                         }
-                                                        is ModelDownloader.DownloadState.Completed -> { isDownloading = false; isModelDownloaded = true }
-                                                        is ModelDownloader.DownloadState.Error -> { isDownloading = false }
-                                                        else -> {}
                                                     }
                                                 }
+                                            }) {
+                                                Text(
+                                                    text = if (cpuSafeMode) "DL CPU (~550MB)" else "DL NPU (~4.5GB)",
+                                                    color = if (cpuSafeMode) Color(0xFF22C55E) else accentPurple,
+                                                    style = TextStyle(fontFamily = techFont, fontWeight = FontWeight.Bold, fontSize = 9.sp)
+                                                )
                                             }
-                                        }) {
-                                            Text("DOWNLOAD", color = accentPurple, style = TextStyle(fontFamily = techFont, fontWeight = FontWeight.Bold))
                                         }
                                     }
                                 }

@@ -200,6 +200,14 @@ class WebViewBridge(
     }
 
     /**
+     * Diagnose model capabilities (bones, vertices, mesh manipulation support).
+     * Results are logged to Android logcat under "WebViewBridge" tag.
+     */
+    fun diagnoseModel() {
+        executeJsSafe("diagnoseModel()")
+    }
+
+    /**
      * Get current morph values from Three.js.
      */
     fun getCurrentMorphs(callback: (MorphParameters) -> Unit) {

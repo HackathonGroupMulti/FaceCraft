@@ -30,7 +30,9 @@ object VlmLogManager {
         val generationTimeMs: Long,
         val attempt: Int,
         val streamTokenCount: Int? = null,
-        val streamRawResults: List<String>? = null
+        val streamRawResults: List<String>? = null,
+        val modelType: String? = null,
+        val modelName: String? = null
     ) {
         fun getFormattedTime(): String = dateFormat.format(Date(timestamp))
 
@@ -39,6 +41,9 @@ object VlmLogManager {
             appendLine("📋 Request #$requestNumber (Attempt $attempt)")
             appendLine("🕐 Time: ${getFormattedTime()}")
             appendLine("⏱️ Duration: ${generationTimeMs}ms")
+            if (modelType != null || modelName != null) {
+                appendLine("🤖 Model: ${modelName ?: "unknown"} (${modelType ?: "unknown"})")
+            }
             appendLine("───────────────────────────────────────")
             appendLine("📤 PROMPT ($promptLength chars):")
             appendLine(prompt)
@@ -83,7 +88,9 @@ object VlmLogManager {
         generationTimeMs: Long,
         attempt: Int,
         streamTokenCount: Int? = null,
-        streamRawResults: List<String>? = null
+        streamRawResults: List<String>? = null,
+        modelType: String? = null,
+        modelName: String? = null
     ) {
         requestCounter++
         val entry = VlmLogEntry(
@@ -98,7 +105,9 @@ object VlmLogManager {
             generationTimeMs = generationTimeMs,
             attempt = attempt,
             streamTokenCount = streamTokenCount,
-            streamRawResults = streamRawResults
+            streamRawResults = streamRawResults,
+            modelType = modelType,
+            modelName = modelName
         )
 
         logs.add(entry)
@@ -125,6 +134,12 @@ object VlmLogManager {
     fun exportLogsAsText(): String = buildString {
         appendLine("VLM Debug Logs - Exported ${dateFormat.format(Date())}")
         appendLine("Total entries: ${logs.size}")
+        // Show last used model info
+        logs.lastOrNull()?.let { last ->
+            if (last.modelType != null || last.modelName != null) {
+                appendLine("Last model: ${last.modelName ?: "unknown"} (${last.modelType ?: "unknown"})")
+            }
+        }
         appendLine()
         logs.forEach { entry ->
             append(entry.toDebugString())
