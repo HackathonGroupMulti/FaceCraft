@@ -2,6 +2,7 @@ package com.facemorphai.service
 
 import android.content.Context
 import android.util.Log
+import com.facemorphai.config.AppConfig
 import com.facemorphai.logging.VlmLogManager
 import com.facemorphai.model.FaceRegion
 import com.facemorphai.model.MorphParameters
@@ -134,8 +135,9 @@ DO NOT write anything except the JSON object.
         // Simplify current state presentation to reduce prompt complexity
         val nonDefaults = currentParameters.getNonDefaultParameters()
         val stateClause = if (nonDefaults.isNotEmpty()) {
-            val simplified = nonDefaults.entries.take(5).joinToString(", ") { "${it.key}:${it.value}" }
-            val more = if (nonDefaults.size > 5) " +${nonDefaults.size - 5} more" else ""
+            val maxParams = AppConfig.Retry.MAX_ACTIVE_PARAMS_IN_PROMPT
+            val simplified = nonDefaults.entries.take(maxParams).joinToString(", ") { "${it.key}:${it.value}" }
+            val more = if (nonDefaults.size > maxParams) " +${nonDefaults.size - maxParams} more" else ""
             "\nActive: $simplified$more"
         } else {
             ""
@@ -155,7 +157,7 @@ Output:""".trimIndent()
         Log.d(TAG, "================================")
 
         try {
-            val maxAttempts = 2
+            val maxAttempts = AppConfig.Retry.MAX_ATTEMPTS
             var lastError: String? = null
 
             for (attempt in 1..maxAttempts) {
@@ -163,7 +165,7 @@ Output:""".trimIndent()
                     Log.d(TAG, "=== RETRY ATTEMPT $attempt ===")
                 }
                 val attemptStartTime = System.currentTimeMillis()
-                val result = nexaService.generateWithStats(prompt = fullPrompt, maxTokens = 256)
+                val result = nexaService.generateWithStats(prompt = fullPrompt, maxTokens = AppConfig.Generation.MORPH_MAX_TOKENS)
                 val attemptDuration = System.currentTimeMillis() - attemptStartTime
 
                 val morphResult = result.fold(
@@ -241,7 +243,7 @@ Output:""".trimIndent()
                 if (morphResult != null) return@withContext morphResult
                 if (attempt < maxAttempts) {
                     Log.d(TAG, "Retrying VLM generation after delay...")
-                    delay(500) // Give the model time to reset before retry
+                    delay(AppConfig.Retry.DELAY_MS)
                 }
             }
 

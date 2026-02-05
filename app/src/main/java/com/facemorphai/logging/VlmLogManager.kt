@@ -1,6 +1,7 @@
 package com.facemorphai.logging
 
 import android.util.Log
+import com.facemorphai.config.AppConfig
 import java.text.SimpleDateFormat
 import java.util.*
 import java.util.concurrent.CopyOnWriteArrayList
@@ -11,7 +12,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 object VlmLogManager {
 
     private const val TAG = "VlmLogManager"
-    private const val MAX_LOGS = 50
+    private val MAX_LOGS = AppConfig.Logging.MAX_LOG_ENTRIES
 
     private val logs = CopyOnWriteArrayList<VlmLogEntry>()
     private val dateFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)

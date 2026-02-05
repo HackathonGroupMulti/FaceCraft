@@ -46,6 +46,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.lifecycleScope
 import com.facemorphai.bridge.WebViewBridge
+import com.facemorphai.config.AppConfig
 import com.facemorphai.logging.VlmLogManager
 import com.facemorphai.model.FaceRegion
 import com.facemorphai.model.MorphRequest
@@ -130,17 +131,17 @@ class MainActivity : ComponentActivity() {
             val screenHeight = maxHeight
 
             // Neural Bubbles - Dynamic Background
-            repeat(12) { index ->
+            repeat(AppConfig.Animation.BUBBLE_COUNT) { index ->
                 val size = (60 + Random.nextInt(120)).dp
                 val startX = Random.nextFloat() * screenWidth.value
                 val startY = Random.nextFloat() * screenHeight.value
-                
+
                 AnimatedBubble(
                     color = if (index % 2 == 0) primaryPurple.copy(alpha = 0.08f) else accentPurple.copy(alpha = 0.05f),
                     size = size,
                     initialX = startX,
                     initialY = startY,
-                    duration = 10000 + (index * 1500)
+                    duration = AppConfig.Animation.BUBBLE_BASE_DURATION_MS + (index * AppConfig.Animation.BUBBLE_DURATION_INCREMENT_MS)
                 )
             }
 

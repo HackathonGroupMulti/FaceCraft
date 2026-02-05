@@ -1,6 +1,7 @@
 package com.facemorphai.service
 
 import android.util.Log
+import com.facemorphai.config.AppConfig
 import com.facemorphai.model.FaceRegion
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -90,7 +91,7 @@ Blendshape names to categorize:
 
         val prompt = CATEGORIZATION_PROMPT + blendShapeNames.joinToString(", ")
 
-        val result = nexaService.generate(prompt, maxTokens = 1024)
+        val result = nexaService.generate(prompt, maxTokens = AppConfig.Generation.CATEGORIZATION_MAX_TOKENS)
 
         result.fold(
             onSuccess = { output ->

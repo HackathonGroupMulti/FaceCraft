@@ -2,6 +2,7 @@ package com.facemorphai.service
 
 import android.content.Context
 import android.util.Log
+import com.facemorphai.config.AppConfig
 import com.nexa.sdk.NexaSdk
 import com.nexa.sdk.VlmWrapper
 import com.nexa.sdk.bean.VlmCreateInput
@@ -97,8 +98,8 @@ class NexaService private constructor(context: Context) {
         modelScope.launch {
             try {
                 val config = ModelConfig(
-                    nCtx = 2048,
-                    nThreads = 4,
+                    nCtx = AppConfig.Model.CONTEXT_SIZE,
+                    nThreads = AppConfig.Model.NUM_THREADS,
                     enable_thinking = false,
                     npu_lib_folder_path = ctx.applicationInfo.nativeLibraryDir,
                     npu_model_folder_path = modelFolder
@@ -149,8 +150,8 @@ class NexaService private constructor(context: Context) {
         val modelFolder = File(manifestPath).parent ?: ""
 
         val config = ModelConfig(
-            nCtx = 2048,
-            nThreads = 4,
+            nCtx = AppConfig.Model.CONTEXT_SIZE,
+            nThreads = AppConfig.Model.NUM_THREADS,
             enable_thinking = false,
             npu_lib_folder_path = ctx.applicationInfo.nativeLibraryDir,
             npu_model_folder_path = modelFolder
@@ -197,7 +198,7 @@ class NexaService private constructor(context: Context) {
 
         try {
             val genConfig = GenerationConfig(
-                maxTokens = 512,
+                maxTokens = AppConfig.Generation.STREAM_MAX_TOKENS,
                 stopWords = null,
                 stopCount = 0,
                 nPast = 0,  // Should reset context, but may not work as expected
@@ -263,12 +264,12 @@ class NexaService private constructor(context: Context) {
         val rawResults: List<String>
     )
 
-    suspend fun generate(prompt: String, maxTokens: Int = 512): Result<String> {
+    suspend fun generate(prompt: String, maxTokens: Int = AppConfig.Generation.STREAM_MAX_TOKENS): Result<String> {
         val result = generateWithStats(prompt, maxTokens)
         return result.map { it.text }
     }
 
-    suspend fun generateWithStats(prompt: String, maxTokens: Int = 512): Result<GenerationResult> {
+    suspend fun generateWithStats(prompt: String, maxTokens: Int = AppConfig.Generation.STREAM_MAX_TOKENS): Result<GenerationResult> {
         val builder = StringBuilder()
         var error: String? = null
         var tokenCount = 0
@@ -294,7 +295,7 @@ class NexaService private constructor(context: Context) {
                 text = builder.toString(),
                 tokenCount = tokenCount,
                 rawResultCount = rawResults.size,
-                rawResults = rawResults.takeLast(20) // Keep last 20 for debugging
+                rawResults = rawResults.takeLast(AppConfig.Generation.DEBUG_RAW_RESULTS_LIMIT)
             ))
         }
     }
