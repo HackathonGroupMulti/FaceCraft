@@ -2,6 +2,7 @@ package com.facemorphai.service
 
 import android.content.Context
 import android.util.Log
+import com.facemorphai.config.AppConfig
 import com.facemorphai.logging.VlmLogManager
 import com.facemorphai.model.FaceRegion
 import com.facemorphai.model.MorphParameters
@@ -130,7 +131,7 @@ Task: $task
         Log.d(TAG, "================================")
 
         try {
-            val maxAttempts = 2
+            val maxAttempts = AppConfig.Retry.MAX_ATTEMPTS
             var lastError: String? = null
 
             for (attempt in 1..maxAttempts) {
@@ -138,7 +139,7 @@ Task: $task
                     Log.d(TAG, "=== RETRY ATTEMPT $attempt ===")
                 }
                 val attemptStartTime = System.currentTimeMillis()
-                val result = nexaService.generateWithStats(prompt = fullPrompt, maxTokens = 256)
+                val result = nexaService.generateWithStats(prompt = fullPrompt, maxTokens = AppConfig.Generation.MORPH_MAX_TOKENS)
                 val attemptDuration = System.currentTimeMillis() - attemptStartTime
 
                 val morphResult = result.fold(
@@ -216,7 +217,7 @@ Task: $task
                 if (morphResult != null) return@withContext morphResult
                 if (attempt < maxAttempts) {
                     Log.d(TAG, "Retrying VLM generation after delay...")
-                    delay(500) // Give the model time to reset before retry
+                    delay(AppConfig.Retry.DELAY_MS)
                 }
             }
 

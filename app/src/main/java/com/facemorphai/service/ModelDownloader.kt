@@ -2,6 +2,7 @@ package com.facemorphai.service
 
 import android.content.Context
 import android.util.Log
+import com.facemorphai.config.AppConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -88,7 +89,7 @@ class ModelDownloader(private val context: Context) {
         modelDir.mkdirs()
 
         var totalDownloaded = 0L
-        val estimatedTotalBytes = 4_760_000_000L
+        val estimatedTotalBytes = AppConfig.Download.ESTIMATED_MODEL_SIZE_BYTES
 
         try {
             for ((index, fileName) in MODEL_FILES.withIndex()) {
@@ -118,8 +119,8 @@ class ModelDownloader(private val context: Context) {
     private fun downloadFile(urlString: String, targetFile: File) {
         val tempFile = File(targetFile.parent, "${targetFile.name}.tmp")
         (URL(urlString).openConnection() as HttpURLConnection).apply {
-            connectTimeout = 60000
-            readTimeout = 60000
+            connectTimeout = AppConfig.Download.CONNECT_TIMEOUT_MS
+            readTimeout = AppConfig.Download.READ_TIMEOUT_MS
             inputStream.use { input ->
                 FileOutputStream(tempFile).use { output ->
                     input.copyTo(output)
