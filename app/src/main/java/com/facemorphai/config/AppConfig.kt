@@ -57,9 +57,6 @@ object AppConfig {
 
         /** Delay between retry attempts in milliseconds */
         const val DELAY_MS = 500L
-
-        /** Max number of active parameters to show in prompt for context reduction */
-        const val MAX_ACTIVE_PARAMS_IN_PROMPT = 5
     }
 
     /**
