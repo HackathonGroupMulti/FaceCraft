@@ -22,48 +22,36 @@ class FaceMorphService(private val context: Context) {
     companion object {
         private const val TAG = "FaceMorphService"
 
-        private fun buildSystemPrompt(blendShapeNames: List<String>): String {
-            val namesList = blendShapeNames.joinToString(", ")
-            val exampleKey = blendShapeNames.firstOrNull() ?: "shape_name"
-            return """
-CRITICAL: Output ONLY raw JSON. No text before or after. No markdown. No explanation. No comments.
-
-Rules:
-- Values: 0.0 to 1.0 (0.0=no change, 1.0=maximum)
-- Only modify requested features
-- Keep other features at their current values
-
-Available keys: $namesList
-
-Format (STRICT):
-{"$exampleKey":0.6}
-
-DO NOT write anything except the JSON object.
-""".trimIndent()
-        }
-
-        private fun getRegionalPrompt(
+        /**
+         * Build an optimized prompt with only region-relevant blendshapes.
+         * This significantly reduces prompt size and generation time.
+         */
+        private fun buildOptimizedPrompt(
             region: FaceRegion,
-            blendShapeNames: List<String>,
-            categorizer: BlendshapeCategorizer?
+            allBlendShapes: List<String>,
+            categorizer: BlendshapeCategorizer?,
+            task: String
         ): String {
-            if (region == FaceRegion.ALL) {
-                return "You may modify any shape keys to achieve the look."
+            // Get only the blendshapes relevant to this region
+            val relevantShapes = if (region == FaceRegion.ALL) {
+                allBlendShapes
+            } else if (categorizer != null && categorizer.getCachedMapping().isNotEmpty()) {
+                categorizer.getBlendshapesForRegion(region).ifEmpty { allBlendShapes }
+            } else {
+                allBlendShapes.filter { region.matchesBlendShape(it) }.ifEmpty { allBlendShapes }
             }
 
-            // Use VLM-categorized mapping if available, otherwise fall back to keyword matching
-            val matching = if (categorizer != null && categorizer.getCachedMapping().isNotEmpty()) {
-                categorizer.getBlendshapesForRegion(region)
-            } else {
-                blendShapeNames.filter { region.matchesBlendShape(it) }
-            }
+            val shapesList = relevantShapes.joinToString(", ")
+            val exampleKey = relevantShapes.firstOrNull() ?: "shape"
 
-            return if (matching.isNotEmpty()) {
-                "Focus ONLY on these shape keys: ${matching.joinToString(", ")}"
-            } else {
-                // No blendshapes for this region - tell VLM to use available shapes creatively
-                "No dedicated ${region.displayName} controls exist. Use available shape keys creatively to approximate the effect. ONLY use keys from the Available keys list above."
-            }
+            // Compact prompt - only essentials
+            return """
+Output ONLY JSON. No markdown, no text.
+Keys: $shapesList
+Values: 0.0-1.0
+Format: {"$exampleKey":0.6}
+Task: $task
+""".trimIndent()
         }
     }
 
@@ -128,26 +116,13 @@ DO NOT write anything except the JSON object.
             )
         }
 
-        val systemPrompt = buildSystemPrompt(blendShapeNames)
-        val regionalInstruction = getRegionalPrompt(request.region, blendShapeNames, categorizer)
-
-        // Simplify current state presentation to reduce prompt complexity
-        val nonDefaults = currentParameters.getNonDefaultParameters()
-        val stateClause = if (nonDefaults.isNotEmpty()) {
-            val simplified = nonDefaults.entries.take(5).joinToString(", ") { "${it.key}:${it.value}" }
-            val more = if (nonDefaults.size > 5) " +${nonDefaults.size - 5} more" else ""
-            "\nActive: $simplified$more"
-        } else {
-            ""
-        }
-
-        val fullPrompt = """
-$systemPrompt$stateClause
-
-Task: ${request.prompt}
-Focus: $regionalInstruction
-
-Output:""".trimIndent()
+        // Build optimized prompt with only region-relevant blendshapes
+        val fullPrompt = buildOptimizedPrompt(
+            region = request.region,
+            allBlendShapes = blendShapeNames,
+            categorizer = categorizer,
+            task = request.prompt
+        )
 
         Log.d(TAG, "=== VLM REQUEST (Attempt 1) ===")
         Log.d(TAG, "Prompt length: ${fullPrompt.length} chars")
